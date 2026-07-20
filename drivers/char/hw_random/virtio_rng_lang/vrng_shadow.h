@@ -45,14 +45,17 @@ struct vrng_shadow {
 	bool active;
 };
 
-void vrng_shadow_init(struct vrng_shadow *shadow, u32 capacity);
-void vrng_shadow_begin_submit(struct vrng_shadow *shadow);
-void vrng_shadow_abort_submit(struct vrng_shadow *shadow);
-void vrng_shadow_complete(struct vrng_shadow *shadow, u32 produced);
-void vrng_shadow_copy(struct vrng_shadow *shadow, const u8 *dma_buffer,
-		      u32 requested);
-void vrng_shadow_begin_remove(struct vrng_shadow *shadow);
-void vrng_shadow_finish_remove(struct vrng_shadow *shadow);
+int vrng_shadow_init(struct vrng_shadow *shadow, u32 capacity);
+int vrng_shadow_begin_submit(struct vrng_shadow *shadow, u64 *generation);
+int vrng_shadow_abort_submit(struct vrng_shadow *shadow, u64 generation);
+int vrng_shadow_recover_consumed(struct vrng_shadow *shadow);
+int vrng_shadow_complete(struct vrng_shadow *shadow, u64 generation,
+			 u32 produced, u32 *need_resubmit);
+int vrng_shadow_copy(struct vrng_shadow *shadow, const u8 *dma_buffer,
+		     u8 *destination, u32 requested, u32 *copied,
+		     u32 *need_resubmit);
+int vrng_shadow_begin_remove(struct vrng_shadow *shadow);
+int vrng_shadow_finish_remove(struct vrng_shadow *shadow);
 void vrng_shadow_snapshot(struct vrng_shadow *shadow, u64 *events,
 			  u64 *mismatches,
 			  struct vrng_shadow_mismatch *last);

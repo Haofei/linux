@@ -26,6 +26,17 @@ enum vrng_buffer_phase {
  * The experiment targets 64-bit x86, arm64, and riscv64.  Explicit alignment
  * and assertions make accidental layout drift a build failure instead of an
  * FFI bug.  The common C glue serializes all mutable calls to one state object.
+ *
+ * state is naturally aligned and covers sizeof(*state) bytes. Mutable calls
+ * have exclusive access for the call. Each non-NULL output is naturally
+ * aligned, writable, and aliases neither state nor another output. For copy(),
+ * dma_buffer covers state->capacity bytes, destination covers
+ * min(requested, state->data_avail) bytes, and the ranges do not overlap.
+ *
+ * Every non-NULL output is zeroed before validating the complete output set,
+ * state representation, data pointers, lifecycle, or phase, in that order.
+ * complete() is IRQ-safe; copy() and lifecycle operations run in process
+ * context under the common glue's serialization.
  */
 struct vrng_core_state {
 	u32 abi_version;

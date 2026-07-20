@@ -299,10 +299,11 @@ config HW_RANDOM_VIRTIO_LANG_SHADOW
 	select HW_RANDOM_VIRTIO_LANG_CORE
 	help
 	  Mirror live virtio-rng submit, completion, copy, and removal events into
-	  the experimental language cores.  The production C driver remains the
-	  sole owner of the virtqueue and DMA buffer; shadow results never control
-	  device behavior.  Mismatches are retained in a bounded preallocated
-	  record and reported during device removal.
+	  the experimental language cores.  The experimental C core controls the
+	  logical completion, copy, and resubmission decisions while common C glue
+	  remains the sole owner of the virtqueue and DMA buffer.  Rust and MC remain
+	  shadows.  Mismatches are retained in a bounded preallocated record and
+	  reported during device removal.
 
 	  Enable the Rust and MC core options above to include those candidates.
 	  If unsure, say N.

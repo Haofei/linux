@@ -35,8 +35,11 @@ and ``del_vqs``; only then is the lifecycle ``Dead``.
 
 Submission is transactional.  ``begin_submit`` logically transfers the buffer
 before the glue publishes a descriptor.  A failed ``virtqueue_add_inbuf`` is
-followed by ``abort_submit``.  The queue token carries the returned generation;
-the callback never reconstructs it from current mutable state.
+followed by ``abort_submit`` and is propagated without kicking the queue.  The
+queue token is an embedded cookie containing the device, epoch, generation, and
+request identifier; its contents remain immutable while the descriptor is
+queued.  The callback passes the cookie generation to the core and never
+reconstructs it from current mutable state.
 
 Errors
 ======
@@ -86,10 +89,12 @@ For all valid states::
 Empty and DeviceOwned have zero index and availability.  Ready is Active and
 has nonzero availability.  Quiescing is never Ready.  Dead is always Empty.
 
-All output parameters are initialized before a transition-specific error is
-returned.  Rejected transitions do not partially mutate the state, except that
-a valid zero/oversize completion consumes DeviceOwned and returns to Empty as
-documented above.
+Every non-NULL output parameter is initialized before the complete output set,
+state representation, data pointers, lifecycle, or phase is validated, in that
+order.  Rejected transitions do not partially mutate the state, except that a
+valid zero/oversize completion consumes DeviceOwned and returns to Empty as
+documented above.  The shared ABI header defines alignment, extent,
+non-aliasing, serialization, and IRQ-context requirements.
 
 Testing
 =======
@@ -98,14 +103,13 @@ Current status (2026-07-20)
 ---------------------------
 
 The executable specification and all three candidates are implemented.  The
-base KUnit kernel executes twelve tests: eight C/spec tests and directed plus
-depth-seven bounded state-space comparisons for both Rust and MC.  All twelve
-pass on x86-64, arm64, and riscv64 QEMU kernels.  Shadow-enabled kernels add
-three tests for normal mirroring, queue-add rollback, and bounded mismatch
-recording; all fifteen pass on x86-64, arm64, and riscv64.  They also pass under
-KCSAN and under a combined KASAN/UBSAN/lockdep/debug-atomic-sleep x86-64
-configuration.  C, Rust, and MC objects cross-build for all three
-architectures; ``mcc emit-layout`` reports the expected 40-byte MC C-ABI layout.
+published baseline ran twelve tests on x86-64, arm64, and riscv64 QEMU kernels,
+plus three shadow tests, and passed under KCSAN and a combined
+KASAN/UBSAN/lockdep/debug-atomic-sleep x86-64 configuration.  The M3.5 patch
+adds per-language pointer/state/output contract tests and a queued-cookie
+generation test.  The normal x86-64 configuration passes all 19 KUnit tests.
+C, Rust, and MC objects cross-build for all three architectures;
+``mcc emit-layout`` reports the expected 40-byte MC C-ABI layout.
 
 The M0 object-toolchain gate is now closed.  MC's ``--linux-kernel`` LLVM
 profile emits x86 IBT and return-thunk metadata, marks functions ``nounwind``,
@@ -118,16 +122,25 @@ attributes and metadata, and the passing object begins exported functions with
 ``bti c``.  Kbuild tracks the private ``mcc-real`` executable as well as its
 launcher so compiler updates invalidate generated objects.
 
-M3 shadow mode is implemented beside ``virtio-rng.c``.  The production driver
-remains authoritative for all queue, DMA, copy, wakeup, and lifecycle behavior.
-A spinlock-serialized, preallocated shadow mirrors submit, abort, completion,
-copy, and two-stage removal into independent C, Rust, and MC states.  Callback
-handling only updates fixed storage; detailed reporting is deferred until
-device removal.  Two concurrent ``/dev/hwrng`` readers followed by virtio
-unbind produced 59,774 mirrored events and zero mismatches in normal, KCSAN,
-and KASAN/UBSAN/lockdep kernels.
+M3 normal-path shadow mode is implemented beside ``virtio-rng.c``.  Its
+published run compared the three language models while the original production
+logic remained authoritative; it did not establish equivalence with that live
+logic.  Two concurrent ``/dev/hwrng`` readers followed by virtio unbind produced
+59,774 mirrored events and zero language-model mismatches in normal, KCSAN, and
+KASAN/UBSAN/lockdep kernels.
 
-Shadow mode is not candidate-control mode.  ``#[irq_context]`` verifies the MC
+M3.5 makes the experimental C core authoritative for live logical completion,
+copy, and resubmission decisions while Rust and MC remain shadows.  Common C
+glue owns the queue and DMA storage, propagates queue-add errors, and uses
+generation cookies whose contents remain immutable while queued.  It resubmits
+zero/oversize completions from a preallocated work item after the reader
+observes the stored error and serializes process copy/resubmit against removal.
+The normal x86-64 live PCI test passed a read/unbind race with 11,810 matching
+protocol events.  Fault injection, sanitizer configurations, and
+arm64/riscv64 requalification remain required before M4 can start.
+
+Rust and MC remain shadows rather than selectable controlling cores.
+``#[irq_context]`` verifies the MC
 completion call graph, but ``#[no_lang_trap]`` cannot certify access to the
 C-layout state: current MC inserts ``InvalidRepresentation`` edges for even
 full-domain ``u32`` fields in an ``extern struct``.  The minimal expected-failure
@@ -155,13 +168,15 @@ for arm64 and riscv64.
 Remaining gates before candidate control
 ========================================
 
-1. Decide whether to fix MC's extern-struct representation proof so the IRQ
+1. Requalify M3.5 under the normal, KCSAN, KASAN/UBSAN/lockdep, and three-arch
+   KUnit/QEMU matrix, including queue-add and completion fault injection.
+2. Decide whether to fix MC's extern-struct representation proof so the IRQ
    completion path can satisfy ``#[no_lang_trap]``; otherwise retain it as a
    measured language limitation.
-2. Add host differential enumeration with failure-sequence persistence.
-3. Add live fault-injection cases without weakening the production kernel
+3. Add host differential enumeration with failure-sequence persistence.
+4. Add live fault-injection cases without weakening the production kernel
    configuration.
-4. Exercise suspend/restore and transport-level hot-unplug races.  Candidate
+5. Exercise suspend/restore and transport-level hot-unplug races.  Candidate
    control remains disabled until those cases pass KCSAN and QEMU stress.
 
 MC contract fixtures

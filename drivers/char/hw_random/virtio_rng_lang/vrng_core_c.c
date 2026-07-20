@@ -161,10 +161,12 @@ int vrng_core_c_copy(struct vrng_core_state *state, const u8 *dma_buffer,
 	u32 amount, idx, next_idx, next_avail;
 	int ret;
 
+	if (copied)
+		*copied = 0;
+	if (need_resubmit)
+		*need_resubmit = 0;
 	if (!copied || !need_resubmit)
 		return -EINVAL;
-	*copied = 0;
-	*need_resubmit = 0;
 
 	ret = vrng_core_c_validate(state);
 	if (ret)

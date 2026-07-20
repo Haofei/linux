@@ -20,7 +20,8 @@ const EOVERFLOW: i32 = - 75;
 const ENODATA: i32 = - 61;
 const EALREADY: i32 = - 114;
 const ESTALE: i32 = - 116;
-const U64_MAX: u64 = 18446744073709551615;
+const U64_WORD_MAX: u64 = 0xFFFF_FFFF;
+const U64_MAX: u64 = (U64_WORD_MAX << 32) | U64_WORD_MAX;
 const STATE_ACTIVE_EMPTY: u32 = 0;
 const STATE_ACTIVE_DEVICE_OWNED: u32 = 1;
 const STATE_ACTIVE_READY: u32 = 2;
@@ -49,6 +50,8 @@ open enum DecodedState: u32 {
     Dead = 5,
     Invalid = 6,
 }
+
+extern "C" fn vrng_core_index_nospec(index: u32, size: u32) -> u32;
 
 #[irq_context]
 fn decode_code(state: *const VrngCoreState) -> u32 {
@@ -229,39 +232,39 @@ export fn vrng_core_mc_copy(
     maybe_copied: ?*mut u32,
     maybe_need_resubmit: ?*mut u32,
 ) -> i32 {
+    if let copied = maybe_copied { copied.* = 0; }
+    if let need_resubmit = maybe_need_resubmit { need_resubmit.* = 0; }
     if let copied = maybe_copied {
-        copied.* = 0;
         if let need_resubmit = maybe_need_resubmit {
-            need_resubmit.* = 0;
             if let state = maybe_state {
                 let decoded: DecodedState = decode(state);
                 if decoded ==.Invalid { return EINVAL; }
-                if decoded ==.ActiveEmpty { return EAGAIN; }
-                if decoded ==.ActiveDeviceOwned { return EBUSY; }
-                if decoded !=.ActiveReady { return ENODEV; }
                 if let dma_buffer = maybe_dma_buffer {
                     if let destination = maybe_destination {
+                        if decoded ==.ActiveEmpty { return EAGAIN; }
+                        if decoded ==.ActiveDeviceOwned { return EBUSY; }
+                        if decoded !=.ActiveReady { return ENODEV; }
                         if requested == 0 { return 0; }
                         var amount: u32 = requested;
                         if state.data_avail < amount { amount = state.data_avail; }
-                        if state.data_idx > state.capacity { return EOVERFLOW; }
-                        if amount > state.capacity - state.data_idx { return EOVERFLOW; }
+                        let hardened_index: u32 = vrng_core_index_nospec(state.data_idx, state.capacity);
+                        if hardened_index > state.capacity { return EOVERFLOW; }
+                        if amount > state.capacity - hardened_index { return EOVERFLOW; }
                         var next_idx: u32 = 0;
                         var next_avail: u32 = 0;
                         // decode() and the guards prove both transition calculations.
                         #[unsafe_contract(no_overflow)]
                         {
-                            next_idx = unchecked.add(state.data_idx, amount);
+                            next_idx = unchecked.add(hardened_index, amount);
                             next_avail = unchecked.sub(state.data_avail, amount);
                         }
                         var i: u32 = 0;
                         while i < amount {
                             var source_index: u32 = 0;
-                            // The guards above establish data_idx + amount <= capacity;
-                            // i < amount proves both additions cannot overflow.
+                            // The hardened index and guards establish the range.
                             #[unsafe_contract(no_overflow)]
                             {
-                                source_index = unchecked.add(state.data_idx, i);
+                                source_index = unchecked.add(hardened_index, i);
                             }
                             unsafe {
                                 destination.offset(i as usize).* = dma_buffer.offset(source_index as usize).*;

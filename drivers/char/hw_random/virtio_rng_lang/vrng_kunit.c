@@ -361,6 +361,71 @@ static void vrng_invalid_state_and_outputs_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, generation, 0ULL);
 }
 
+static void vrng_copy_contract_for_ops(struct kunit *test,
+				       const struct vrng_core_ops *ops)
+{
+	struct vrng_core_state state, before;
+	u8 dma[8] = {}, destination[8] = {};
+	u32 copied, need_resubmit;
+	u64 generation;
+	int ret;
+
+	KUNIT_ASSERT_EQ(test, ops->init(&state, sizeof(dma), 10), 0);
+	before = state;
+	copied = 99;
+	ret = ops->copy(&state, dma, destination, 1, &copied, NULL);
+	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
+	KUNIT_EXPECT_EQ(test, copied, 0U);
+	KUNIT_EXPECT_MEMEQ(test, &state, &before, sizeof(state));
+
+	need_resubmit = 99;
+	ret = ops->copy(&state, dma, destination, 1, NULL,
+			&need_resubmit);
+	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
+	KUNIT_EXPECT_EQ(test, need_resubmit, 0U);
+	KUNIT_EXPECT_MEMEQ(test, &state, &before, sizeof(state));
+
+	copied = 99;
+	need_resubmit = 99;
+	ret = ops->copy(&state, NULL, destination, 1, &copied,
+			&need_resubmit);
+	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
+	KUNIT_EXPECT_EQ(test, copied, 0U);
+	KUNIT_EXPECT_EQ(test, need_resubmit, 0U);
+	KUNIT_EXPECT_MEMEQ(test, &state, &before, sizeof(state));
+
+	ret = ops->copy(&state, dma, destination, 1, &copied,
+			&need_resubmit);
+	KUNIT_EXPECT_EQ(test, ret, -EAGAIN);
+	KUNIT_EXPECT_MEMEQ(test, &state, &before, sizeof(state));
+
+	KUNIT_ASSERT_EQ(test, ops->begin_submit(&state, &generation), 0);
+	before = state;
+	ret = ops->copy(&state, NULL, destination, 1, &copied,
+			&need_resubmit);
+	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
+	ret = ops->copy(&state, dma, destination, 1, &copied,
+			&need_resubmit);
+	KUNIT_EXPECT_EQ(test, ret, -EBUSY);
+	KUNIT_EXPECT_MEMEQ(test, &state, &before, sizeof(state));
+
+	KUNIT_ASSERT_EQ(test, ops->abort_submit(&state, generation), 0);
+	KUNIT_ASSERT_EQ(test, ops->begin_remove(&state), 0);
+	before = state;
+	ret = ops->copy(&state, NULL, destination, 1, &copied,
+			&need_resubmit);
+	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
+	ret = ops->copy(&state, dma, destination, 1, &copied,
+			&need_resubmit);
+	KUNIT_EXPECT_EQ(test, ret, -ENODEV);
+	KUNIT_EXPECT_MEMEQ(test, &state, &before, sizeof(state));
+}
+
+static void vrng_c_copy_contract_test(struct kunit *test)
+{
+	vrng_copy_contract_for_ops(test, &vrng_c_ops);
+}
+
 struct vrng_bfs_node {
 	struct vrng_core_state state;
 	u32 depth;
@@ -486,6 +551,8 @@ static void vrng_bounded_state_space_test(struct kunit *test)
 	vrng_bounded_state_space(test, &vrng_c_ops);
 }
 
+#if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_RUST) || \
+	IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_MC)
 static void vrng_candidate_directed(struct kunit *test,
 				    const struct vrng_core_ops *ops)
 {
@@ -523,6 +590,7 @@ static void vrng_candidate_directed(struct kunit *test,
 				   },
 				   dma);
 }
+#endif
 
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_RUST)
 static void vrng_rust_directed_test(struct kunit *test)
@@ -533,6 +601,11 @@ static void vrng_rust_directed_test(struct kunit *test)
 static void vrng_rust_bounded_state_space_test(struct kunit *test)
 {
 	vrng_bounded_state_space(test, &vrng_rust_ops);
+}
+
+static void vrng_rust_copy_contract_test(struct kunit *test)
+{
+	vrng_copy_contract_for_ops(test, &vrng_rust_ops);
 }
 #endif
 
@@ -546,6 +619,11 @@ static void vrng_mc_bounded_state_space_test(struct kunit *test)
 {
 	vrng_bounded_state_space(test, &vrng_mc_ops);
 }
+
+static void vrng_mc_copy_contract_test(struct kunit *test)
+{
+	vrng_copy_contract_for_ops(test, &vrng_mc_ops);
+}
 #endif
 
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
@@ -554,14 +632,27 @@ static void vrng_shadow_normal_sequence_test(struct kunit *test)
 	struct vrng_shadow_mismatch last;
 	struct vrng_shadow shadow;
 	u8 dma[8] = { 0, 1, 2, 3, 4, 5, 6, 7 };
+	u8 destination[8] = {};
+	u32 copied, need_resubmit;
+	u64 generation;
 	u64 events, mismatches;
 
-	vrng_shadow_init(&shadow, sizeof(dma));
-	vrng_shadow_begin_submit(&shadow);
-	vrng_shadow_complete(&shadow, sizeof(dma));
-	vrng_shadow_copy(&shadow, dma, 3);
-	vrng_shadow_copy(&shadow, dma, 5);
-	vrng_shadow_begin_submit(&shadow);
+	KUNIT_ASSERT_EQ(test, vrng_shadow_init(&shadow, sizeof(dma)), 0);
+	KUNIT_ASSERT_EQ(test,
+			vrng_shadow_begin_submit(&shadow, &generation), 0);
+	KUNIT_ASSERT_EQ(test,
+			vrng_shadow_complete(&shadow, generation, sizeof(dma),
+					     &need_resubmit), 0);
+	KUNIT_ASSERT_EQ(test,
+			vrng_shadow_copy(&shadow, dma, destination, 3, &copied,
+					 &need_resubmit), 0);
+	KUNIT_EXPECT_EQ(test, copied, 3U);
+	KUNIT_ASSERT_EQ(test,
+			vrng_shadow_copy(&shadow, dma, destination + 3, 5,
+					 &copied, &need_resubmit), 0);
+	KUNIT_EXPECT_EQ(test, need_resubmit, 1U);
+	KUNIT_ASSERT_EQ(test,
+			vrng_shadow_begin_submit(&shadow, &generation), 0);
 	vrng_shadow_begin_remove(&shadow);
 	vrng_shadow_finish_remove(&shadow);
 	vrng_shadow_snapshot(&shadow, &events, &mismatches, &last);
@@ -576,11 +667,14 @@ static void vrng_shadow_abort_sequence_test(struct kunit *test)
 {
 	struct vrng_shadow_mismatch last;
 	struct vrng_shadow shadow;
+	u64 generation;
 	u64 events, mismatches;
 
-	vrng_shadow_init(&shadow, 8);
-	vrng_shadow_begin_submit(&shadow);
-	vrng_shadow_abort_submit(&shadow);
+	KUNIT_ASSERT_EQ(test, vrng_shadow_init(&shadow, 8), 0);
+	KUNIT_ASSERT_EQ(test,
+			vrng_shadow_begin_submit(&shadow, &generation), 0);
+	KUNIT_ASSERT_EQ(test,
+			vrng_shadow_abort_submit(&shadow, generation), 0);
 	vrng_shadow_begin_remove(&shadow);
 	vrng_shadow_finish_remove(&shadow);
 	vrng_shadow_snapshot(&shadow, &events, &mismatches, &last);
@@ -590,21 +684,50 @@ static void vrng_shadow_abort_sequence_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, shadow.c_state.lifecycle, (u32)VRNG_DEAD);
 }
 
+static void vrng_shadow_cookie_generation_test(struct kunit *test)
+{
+	struct vrng_shadow_mismatch last;
+	struct vrng_shadow shadow;
+	u32 need_resubmit = 99;
+	u64 events, generation, mismatches;
+
+	KUNIT_ASSERT_EQ(test, vrng_shadow_init(&shadow, 8), 0);
+	KUNIT_ASSERT_EQ(test,
+			vrng_shadow_begin_submit(&shadow, &generation), 0);
+	KUNIT_EXPECT_EQ(test,
+			vrng_shadow_complete(&shadow, generation - 1, 4,
+					     &need_resubmit), -ESTALE);
+	KUNIT_EXPECT_EQ(test, need_resubmit, 0U);
+	KUNIT_EXPECT_EQ(test, shadow.c_state.phase,
+			(u32)VRNG_DEVICE_OWNED);
+	KUNIT_ASSERT_EQ(test, vrng_shadow_recover_consumed(&shadow), 0);
+	KUNIT_EXPECT_EQ(test, shadow.c_state.phase, (u32)VRNG_EMPTY);
+	KUNIT_ASSERT_EQ(test,
+			vrng_shadow_begin_submit(&shadow, &generation), 0);
+	KUNIT_EXPECT_EQ(test,
+			vrng_shadow_complete(&shadow, generation, 4,
+					     &need_resubmit), 0);
+	vrng_shadow_snapshot(&shadow, &events, &mismatches, &last);
+	KUNIT_EXPECT_EQ(test, events, 6ULL);
+	KUNIT_EXPECT_EQ(test, mismatches, 0ULL);
+}
+
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_RUST) || \
 	IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_MC)
 static void vrng_shadow_mismatch_record_test(struct kunit *test)
 {
 	struct vrng_shadow_mismatch last;
 	struct vrng_shadow shadow;
+	u64 generation;
 	u64 events, mismatches;
 
-	vrng_shadow_init(&shadow, 8);
+	KUNIT_ASSERT_EQ(test, vrng_shadow_init(&shadow, 8), 0);
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_RUST)
 	shadow.rust_state.capacity = 0;
 #else
 	shadow.mc_state.capacity = 0;
 #endif
-	vrng_shadow_begin_submit(&shadow);
+	vrng_shadow_begin_submit(&shadow, &generation);
 	vrng_shadow_snapshot(&shadow, &events, &mismatches, &last);
 
 	KUNIT_EXPECT_EQ(test, events, 2ULL);
@@ -623,18 +746,22 @@ static struct kunit_case vrng_core_test_cases[] = {
 	KUNIT_CASE(vrng_remove_sequence_test),
 	KUNIT_CASE(vrng_generation_overflow_test),
 	KUNIT_CASE(vrng_invalid_state_and_outputs_test),
+	KUNIT_CASE(vrng_c_copy_contract_test),
 	KUNIT_CASE(vrng_bounded_state_space_test),
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_RUST)
 	KUNIT_CASE(vrng_rust_directed_test),
 	KUNIT_CASE(vrng_rust_bounded_state_space_test),
+	KUNIT_CASE(vrng_rust_copy_contract_test),
 #endif
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_MC)
 	KUNIT_CASE(vrng_mc_directed_test),
 	KUNIT_CASE(vrng_mc_bounded_state_space_test),
+	KUNIT_CASE(vrng_mc_copy_contract_test),
 #endif
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
 	KUNIT_CASE(vrng_shadow_normal_sequence_test),
 	KUNIT_CASE(vrng_shadow_abort_sequence_test),
+	KUNIT_CASE(vrng_shadow_cookie_generation_test),
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_RUST) || \
 	IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_MC)
 	KUNIT_CASE(vrng_shadow_mismatch_record_test),

@@ -229,28 +229,35 @@ unsafe extern "C" fn vrng_core_rust_copy(
     copied: *mut u32,
     need_resubmit: *mut u32,
 ) -> i32 {
+    // SAFETY: Every non-null output is writable and does not alias another output.
+    unsafe {
+        if !copied.is_null() {
+            copied.write(0);
+        }
+        if !need_resubmit.is_null() {
+            need_resubmit.write(0);
+        }
+    }
     if copied.is_null() || need_resubmit.is_null() {
         return errno(bindings::EINVAL);
-    }
-    // SAFETY: The ABI requires valid writable output pointers.
-    unsafe {
-        copied.write(0);
-        need_resubmit.write(0);
     }
     // SAFETY: The glue serializes calls and guarantees exclusive access.
     let Some(state) = (unsafe { state.as_mut() }) else {
         return errno(bindings::EINVAL);
     };
-    let (index, available) = match decode(state) {
+    let decoded = match decode(state) {
+        Ok(decoded) => decoded,
         Err(error) => return error,
-        Ok(DecodedState::ActiveEmpty) => return errno(bindings::EAGAIN),
-        Ok(DecodedState::ActiveDeviceOwned) => return errno(bindings::EBUSY),
-        Ok(DecodedState::ActiveReady { index, available }) => (index, available),
-        Ok(_) => return errno(bindings::ENODEV),
     };
     if dma_buffer.is_null() || destination.is_null() {
         return errno(bindings::EINVAL);
     }
+    let (index, available) = match decoded {
+        DecodedState::ActiveEmpty => return errno(bindings::EAGAIN),
+        DecodedState::ActiveDeviceOwned => return errno(bindings::EBUSY),
+        DecodedState::ActiveReady { index, available } => (index, available),
+        _ => return errno(bindings::ENODEV),
+    };
     if requested == 0 {
         return 0;
     }
