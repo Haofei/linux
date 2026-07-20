@@ -25,6 +25,11 @@
 
 static DEFINE_IDA(rng_index_ida);
 
+static unsigned int vrng_copy_chunk_limit;
+module_param_named(lang_copy_chunk_limit, vrng_copy_chunk_limit, uint, 0600);
+MODULE_PARM_DESC(lang_copy_chunk_limit,
+		 "limit bytes copied from one virtio completion per driver read");
+
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
 static int vrng_lang_fail_add_once;
 static int vrng_lang_completion_override = -1;
@@ -66,7 +71,7 @@ struct virtrng_info {
 	bool hwrng_register_done;
 	bool hwrng_removed;
 	bool cleanup_pending;
-	bool fatal_error;
+	int fatal_errno;
 	/* Serializes process-context copy, resubmit, retry, and removal. */
 	struct mutex process_lock;
 	struct delayed_work refill_work;
@@ -103,10 +108,20 @@ static void publish_data_error(struct virtrng_info *vi, int error)
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
 static void publish_fatal_error(struct virtrng_info *vi, int error)
 {
-	WRITE_ONCE(vi->fatal_error, true);
-	publish_data_error(vi, error);
+	if (error >= 0)
+		error = -EIO;
+	cmpxchg(&vi->fatal_errno, 0, error);
+	/* Fatal errors are terminal and must remain visible to every reader. */
+	smp_store_release(&vi->data_avail, 0);
+	complete_all(&vi->have_data);
 }
 #endif
+
+static void publish_request_error(struct virtrng_info *vi, int error)
+{
+	if (!READ_ONCE(vi->fatal_errno))
+		publish_data_error(vi, error);
+}
 
 static void refill_entropy(struct work_struct *work)
 {
@@ -120,7 +135,7 @@ static void refill_entropy(struct work_struct *work)
 		goto unlock;
 	err = request_entropy_locked(vi);
 	if (err)
-		publish_data_error(vi, err);
+		publish_request_error(vi, err);
 unlock:
 	mutex_unlock(&vi->process_lock);
 }
@@ -141,8 +156,10 @@ static void random_recv_done(struct virtqueue *vq)
 		return;
 
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
-	if (WARN_ON_ONCE(cookie != &vi->cookie || cookie->vi != vi))
+	if (WARN_ON_ONCE(cookie != &vi->cookie || cookie->vi != vi)) {
+		publish_fatal_error(vi, -EPROTO);
 		return;
+	}
 	if (READ_ONCE(vrng_lang_hold_completion)) {
 		WRITE_ONCE(vrng_lang_completion_held, 1);
 		return;
@@ -170,6 +187,7 @@ static void random_recv_done(struct virtqueue *vq)
 		return;
 	}
 #endif
+	/* Publish the completed DMA bytes before waking readers. */
 	smp_store_release(&vi->data_avail, len);
 	complete(&vi->have_data);
 }
@@ -186,8 +204,8 @@ static int request_entropy_locked(struct virtrng_info *vi)
 	lockdep_assert_held(&vi->process_lock);
 	if (vi->hwrng_removed)
 		return -ENODEV;
-	if (vi->fatal_error)
-		return -EIO;
+	if (READ_ONCE(vi->fatal_errno))
+		return READ_ONCE(vi->fatal_errno);
 
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
 	err = vrng_shadow_begin_submit(&vi->shadow, &generation);
@@ -215,7 +233,7 @@ static int request_entropy_locked(struct virtrng_info *vi)
 
 		abort_err = vrng_shadow_abort_submit(&vi->shadow, generation);
 		if (abort_err) {
-			WRITE_ONCE(vi->fatal_error, true);
+			publish_fatal_error(vi, abort_err);
 			return abort_err;
 		}
 #endif
@@ -229,20 +247,27 @@ static int copy_data_locked(struct virtrng_info *vi, void *buf,
 			    unsigned int size)
 {
 	int err;
+	unsigned int chunk_limit = READ_ONCE(vrng_copy_chunk_limit);
+
+	if (chunk_limit)
+		size = min(size, chunk_limit);
 
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
 	u32 copied = 0, need_resubmit = 0;
 
 	err = vrng_shadow_copy(&vi->shadow, vi->data, buf, size, &copied,
 			       &need_resubmit);
-	if (err)
+	if (err) {
+		if (err == -EPROTO)
+			publish_fatal_error(vi, err);
 		return err;
+	}
 	vi->data_idx += copied;
 	vi->data_avail -= copied;
 	if (need_resubmit) {
 		err = request_entropy_locked(vi);
 		if (err)
-			publish_data_error(vi, err);
+			publish_request_error(vi, err);
 	}
 	return copied;
 #else
@@ -266,13 +291,13 @@ static int copy_data_locked(struct virtrng_info *vi, void *buf,
 		vi->data_avail = 0;
 		err = request_entropy_locked(vi);
 		if (err)
-			publish_data_error(vi, err);
+			publish_request_error(vi, err);
 		return copied;
 	}
 	if (vi->data_avail == 0) {
 		err = request_entropy_locked(vi);
 		if (err)
-			publish_data_error(vi, err);
+			publish_request_error(vi, err);
 	}
 	return copied;
 #endif
@@ -282,7 +307,7 @@ static int virtio_read(struct hwrng *rng, void *buf, size_t size, bool wait)
 {
 	int ret;
 	struct virtrng_info *vi = (struct virtrng_info *)rng->priv;
-	int chunk, pending_error;
+	int chunk, fatal_error, pending_error;
 	size_t read;
 
 	read = 0;
@@ -298,9 +323,11 @@ static int virtio_read(struct hwrng *rng, void *buf, size_t size, bool wait)
 			mutex_unlock(&vi->process_lock);
 			return read;
 		}
-		pending_error = xchg(&vi->data_error, 0);
+		fatal_error = READ_ONCE(vi->fatal_errno);
+		pending_error = virtrng_read_error(fatal_error,
+						   &vi->data_error);
 		if (pending_error) {
-			if (!READ_ONCE(vi->fatal_error))
+			if (!fatal_error)
 				mod_delayed_work(system_wq, &vi->refill_work, 0);
 			mutex_unlock(&vi->process_lock);
 			return read ?: pending_error;
@@ -316,6 +343,9 @@ static int virtio_read(struct hwrng *rng, void *buf, size_t size, bool wait)
 		read += chunk;
 		if (!size || !wait)
 			return read;
+		/* Consume remaining bytes before waiting for another completion. */
+		if (chunk)
+			continue;
 		ret = wait_for_completion_killable(&vi->have_data);
 		if (ret < 0)
 			return read ?: ret;
@@ -341,7 +371,8 @@ static int probe_common(struct virtio_device *vdev)
 	if (!vi)
 		return -ENOMEM;
 
-	vi->index = index = ida_alloc(&rng_index_ida, GFP_KERNEL);
+	index = ida_alloc(&rng_index_ida, GFP_KERNEL);
+	vi->index = index;
 	if (index < 0) {
 		err = index;
 		goto err_ida;
@@ -388,6 +419,7 @@ err_request:
 	vdev->config->del_vqs(vdev);
 
 err_find:
+	vdev->priv = NULL;
 	ida_free(&rng_index_ida, index);
 err_ida:
 	kfree(vi);
@@ -397,6 +429,7 @@ err_ida:
 static void remove_common(struct virtio_device *vdev)
 {
 	struct virtrng_info *vi = vdev->priv;
+	bool unregister;
 
 	if (!vi)
 		return;
@@ -411,12 +444,14 @@ static void remove_common(struct virtio_device *vdev)
 #endif
 
 	vi->hwrng_removed = true;
+	unregister = vi->hwrng_register_done;
+	vi->hwrng_register_done = false;
 	vi->data_avail = 0;
 	vi->data_idx = 0;
 	mutex_unlock(&vi->process_lock);
 	complete(&vi->have_data);
 	cancel_delayed_work_sync(&vi->refill_work);
-	if (vi->hwrng_register_done)
+	if (unregister)
 		hwrng_unregister(&vi->hwrng);
 	virtio_reset_device(vdev);
 	vdev->config->del_vqs(vdev);
@@ -456,10 +491,13 @@ static void virtrng_scan(struct virtio_device *vdev)
 	int err;
 
 	err = hwrng_register(&vi->hwrng);
-	if (!err)
+	if (!err) {
+		mutex_lock(&vi->process_lock);
 		vi->hwrng_register_done = true;
-	else
+		mutex_unlock(&vi->process_lock);
+	} else {
 		remove_common(vdev);
+	}
 }
 
 static int virtrng_freeze(struct virtio_device *vdev)
@@ -481,11 +519,15 @@ static int virtrng_restore(struct virtio_device *vdev)
 		 * does not block waiting for data before the
 		 * registration is complete.
 		 */
+		mutex_lock(&vi->process_lock);
 		vi->hwrng_removed = true;
+		mutex_unlock(&vi->process_lock);
 		err = hwrng_register(&vi->hwrng);
 		if (!err) {
+			mutex_lock(&vi->process_lock);
 			vi->hwrng_register_done = true;
 			vi->hwrng_removed = false;
+			mutex_unlock(&vi->process_lock);
 		} else {
 			remove_common(vdev);
 		}

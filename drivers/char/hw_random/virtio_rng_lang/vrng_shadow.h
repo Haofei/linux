@@ -54,6 +54,8 @@ int vrng_shadow_complete(struct vrng_shadow *shadow, u64 generation,
 int vrng_shadow_copy(struct vrng_shadow *shadow, const u8 *dma_buffer,
 		     u8 *destination, u32 requested, u32 *copied,
 		     u32 *need_resubmit);
+bool vrng_shadow_copy_output_valid(int result, u32 requested, u32 available,
+				   u32 copied, u32 need_resubmit);
 int vrng_shadow_begin_remove(struct vrng_shadow *shadow);
 int vrng_shadow_finish_remove(struct vrng_shadow *shadow);
 void vrng_shadow_snapshot(struct vrng_shadow *shadow, u64 *events,

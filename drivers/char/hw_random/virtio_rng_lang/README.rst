@@ -114,8 +114,9 @@ published baseline ran twelve tests on x86-64, arm64, and riscv64 QEMU kernels,
 plus three shadow tests, and passed under KCSAN and a combined
 KASAN/UBSAN/lockdep/debug-atomic-sleep x86-64 configuration.  The M3.5 patch
 adds per-language pointer/state/output contract tests and a queued-cookie
-generation test.  The normal x86-64 configuration passes all 20 KUnit tests;
-the C-only shadow-disabled configuration passes 10/10, including absolute-index
+generation test.  The normal x86-64 configuration passes all 22 KUnit tests;
+the C-only shadow-disabled configuration passes 11/11, including persistent
+fatal-error visibility, controlling-output validation, absolute-index,
 and remaining-length partial-copy accounting.  C, Rust, and MC objects
 cross-build for all three architectures;
 ``mcc emit-layout`` reports the expected 40-byte MC C-ABI layout.
@@ -144,13 +145,15 @@ glue owns the queue and DMA storage, propagates queue-add errors, and uses
 generation cookies whose contents remain immutable while queued.  It resubmits
 zero/oversize completions from a preallocated work item after the reader
 observes the stored error and serializes process copy/resubmit against removal.
-Rollback failure is fatal rather than retryable, and restore registration
-failure executes the complete queue/work/core unwind.  Copy comparison stages
-all three implementations in private canary buffers and publishes only the
-validated C result.
-The normal x86-64 live PCI tests passed shadow-disabled ``bs=1/3/7`` reads and a
-shadow run that reached the held-completion synchronization point before
-unbind, with 445 matching protocol events.  Completion/add fault matrices,
+Fatal errors remain visible to every later reader, probe and restore failures
+clear published ownership state, and restore registration state is synchronized
+with readers and removal.  Copy comparison stages all three implementations in
+private canary buffers and publishes only a C result bounded by the request and
+pre-call available bytes.
+The normal x86-64 live PCI tests passed a forced three-byte driver copy limit in
+both shadow-disabled and shadow builds.  The shadow run reached the held-
+completion synchronization point before unbind with 1,213 matching protocol
+events.  Completion/add fault matrices,
 sanitizer configurations, and arm64/riscv64 requalification remain required
 before M4 can start.
 

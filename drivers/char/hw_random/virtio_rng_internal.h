@@ -3,6 +3,7 @@
 #define _VIRTIO_RNG_INTERNAL_H
 
 #include <linux/errno.h>
+#include <linux/atomic.h>
 #include <linux/minmax.h>
 #include <linux/nospec.h>
 #include <linux/string.h>
@@ -26,6 +27,14 @@ static inline int virtrng_copy_available(const u8 *source, u32 capacity,
 	*index += amount;
 	*remaining -= amount;
 	return amount;
+}
+
+static inline int virtrng_read_error(int fatal_errno, int *transient_errno)
+{
+	if (fatal_errno)
+		return fatal_errno;
+
+	return xchg(transient_errno, 0);
 }
 
 #endif /* _VIRTIO_RNG_INTERNAL_H */

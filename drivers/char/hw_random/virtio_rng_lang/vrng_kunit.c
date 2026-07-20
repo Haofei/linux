@@ -462,6 +462,37 @@ static void vrng_partial_copy_accounting_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, remaining, 4U);
 }
 
+static void vrng_persistent_read_error_test(struct kunit *test)
+{
+	int transient = -ENOSPC;
+
+	KUNIT_EXPECT_EQ(test, virtrng_read_error(-EIO, &transient), -EIO);
+	KUNIT_EXPECT_EQ(test, virtrng_read_error(-EIO, &transient), -EIO);
+	KUNIT_EXPECT_EQ(test, transient, -ENOSPC);
+	KUNIT_EXPECT_EQ(test, virtrng_read_error(0, &transient), -ENOSPC);
+	KUNIT_EXPECT_EQ(test, virtrng_read_error(0, &transient), 0);
+}
+
+#if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
+static void vrng_shadow_copy_output_validation_test(struct kunit *test)
+{
+	KUNIT_EXPECT_TRUE(test,
+			  vrng_shadow_copy_output_valid(0, 4, 8, 4, 0));
+	KUNIT_EXPECT_TRUE(test,
+			  vrng_shadow_copy_output_valid(0, 8, 8, 8, 1));
+	KUNIT_EXPECT_TRUE(test,
+			  vrng_shadow_copy_output_valid(-EAGAIN, 4, 0, 0, 0));
+	KUNIT_EXPECT_FALSE(test,
+			   vrng_shadow_copy_output_valid(0, 4, 8, 5, 0));
+	KUNIT_EXPECT_FALSE(test,
+			   vrng_shadow_copy_output_valid(0, 8, 4, 5, 0));
+	KUNIT_EXPECT_FALSE(test,
+			   vrng_shadow_copy_output_valid(0, 4, 8, 4, 2));
+	KUNIT_EXPECT_FALSE(test,
+			   vrng_shadow_copy_output_valid(-EAGAIN, 4, 8, 1, 0));
+}
+#endif
+
 struct vrng_bfs_node {
 	struct vrng_core_state state;
 	u32 depth;
@@ -784,6 +815,7 @@ static struct kunit_case vrng_core_test_cases[] = {
 	KUNIT_CASE(vrng_invalid_state_and_outputs_test),
 	KUNIT_CASE(vrng_c_copy_contract_test),
 	KUNIT_CASE(vrng_partial_copy_accounting_test),
+	KUNIT_CASE(vrng_persistent_read_error_test),
 	KUNIT_CASE(vrng_bounded_state_space_test),
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_RUST)
 	KUNIT_CASE(vrng_rust_directed_test),
@@ -796,6 +828,7 @@ static struct kunit_case vrng_core_test_cases[] = {
 	KUNIT_CASE(vrng_mc_copy_contract_test),
 #endif
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
+	KUNIT_CASE(vrng_shadow_copy_output_validation_test),
 	KUNIT_CASE(vrng_shadow_normal_sequence_test),
 	KUNIT_CASE(vrng_shadow_abort_sequence_test),
 	KUNIT_CASE(vrng_shadow_cookie_generation_test),

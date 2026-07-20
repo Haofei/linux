@@ -234,6 +234,20 @@ unlock:
 	return c_result;
 }
 
+bool vrng_shadow_copy_output_valid(int result, u32 requested, u32 available,
+				   u32 copied, u32 need_resubmit)
+{
+	if (need_resubmit > 1)
+		return false;
+	if (result)
+		return copied == 0 && need_resubmit == 0;
+	if (copied > requested || copied > available ||
+	    copied > VRNG_SHADOW_MAX_COPY)
+		return false;
+
+	return need_resubmit == (copied && copied == available);
+}
+
 int vrng_shadow_copy(struct vrng_shadow *shadow, const u8 *dma_buffer,
 		     u8 *destination, u32 requested, u32 *copied,
 		     u32 *need_resubmit)
@@ -244,14 +258,21 @@ int vrng_shadow_copy(struct vrng_shadow *shadow, const u8 *dma_buffer,
 	unsigned long flags;
 	u32 c_copied = 0, rust_copied = 0, mc_copied = 0;
 	u32 c_resubmit = 0, rust_resubmit = 0, mc_resubmit = 0;
+	u32 pre_available;
 	int c_result, rust_result, mc_result;
-	bool bytes_differ = false;
+	bool bytes_differ = false, c_output_valid;
+
+	if (copied)
+		*copied = 0;
+	if (need_resubmit)
+		*need_resubmit = 0;
 
 	spin_lock_irqsave(&shadow->lock, flags);
 	if (!shadow->active) {
 		c_result = -ENODEV;
 		goto unlock;
 	}
+	pre_available = shadow->c_state.data_avail;
 	memset(c_buffer, 0xa5, sizeof(c_buffer));
 	memset(rust_buffer, 0xa5, sizeof(rust_buffer));
 	memset(mc_buffer, 0xa5, sizeof(mc_buffer));
@@ -299,11 +320,19 @@ int vrng_shadow_copy(struct vrng_shadow *shadow, const u8 *dma_buffer,
 			   0xa5, sizeof(mc_buffer) -
 			   min_t(u32, mc_copied, sizeof(mc_buffer)));
 #endif
-	if (!c_result && c_copied <= sizeof(c_buffer) && c_copied)
-		memcpy(destination, c_buffer, c_copied);
+	c_output_valid = vrng_shadow_copy_output_valid(c_result, requested,
+						       pre_available, c_copied,
+						       c_resubmit);
+	bytes_differ |= !c_output_valid;
 	vrng_shadow_record(shadow, VRNG_SHADOW_COPY, c_result, rust_result,
 			   mc_result, c_copied, rust_copied, mc_copied,
 			   bytes_differ);
+	if (!c_output_valid) {
+		c_result = -EPROTO;
+		goto unlock;
+	}
+	if (!c_result && c_copied)
+		memcpy(destination, c_buffer, c_copied);
 	if (copied)
 		*copied = c_copied;
 	if (need_resubmit)
