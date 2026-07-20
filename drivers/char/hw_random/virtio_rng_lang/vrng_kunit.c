@@ -4,6 +4,7 @@
 #include <linux/module.h>
 #include <linux/string.h>
 
+#include "../virtio_rng_internal.h"
 #include "vrng_core_abi.h"
 #include "vrng_core_spec.h"
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
@@ -426,6 +427,41 @@ static void vrng_c_copy_contract_test(struct kunit *test)
 	vrng_copy_contract_for_ops(test, &vrng_c_ops);
 }
 
+static void vrng_partial_copy_accounting_test(struct kunit *test)
+{
+	u8 source[8] = { 0, 1, 2, 3, 4, 5, 6, 7 };
+	u8 destination[8] = {};
+	u32 index = 0, remaining = sizeof(source);
+	int copied;
+
+	copied = virtrng_copy_available(source, sizeof(source), &index,
+					&remaining, destination, 3);
+	KUNIT_ASSERT_EQ(test, copied, 3);
+	KUNIT_EXPECT_EQ(test, index, 3U);
+	KUNIT_EXPECT_EQ(test, remaining, 5U);
+
+	copied = virtrng_copy_available(source, sizeof(source), &index,
+					&remaining, destination + 3, 3);
+	KUNIT_ASSERT_EQ(test, copied, 3);
+	KUNIT_EXPECT_EQ(test, index, 6U);
+	KUNIT_EXPECT_EQ(test, remaining, 2U);
+
+	copied = virtrng_copy_available(source, sizeof(source), &index,
+					&remaining, destination + 6, 3);
+	KUNIT_ASSERT_EQ(test, copied, 2);
+	KUNIT_EXPECT_EQ(test, index, 8U);
+	KUNIT_EXPECT_EQ(test, remaining, 0U);
+	KUNIT_EXPECT_MEMEQ(test, destination, source, sizeof(source));
+
+	index = 5;
+	remaining = 4;
+	copied = virtrng_copy_available(source, sizeof(source), &index,
+					&remaining, destination, 1);
+	KUNIT_EXPECT_EQ(test, copied, -EOVERFLOW);
+	KUNIT_EXPECT_EQ(test, index, 5U);
+	KUNIT_EXPECT_EQ(test, remaining, 4U);
+}
+
 struct vrng_bfs_node {
 	struct vrng_core_state state;
 	u32 depth;
@@ -747,6 +783,7 @@ static struct kunit_case vrng_core_test_cases[] = {
 	KUNIT_CASE(vrng_generation_overflow_test),
 	KUNIT_CASE(vrng_invalid_state_and_outputs_test),
 	KUNIT_CASE(vrng_c_copy_contract_test),
+	KUNIT_CASE(vrng_partial_copy_accounting_test),
 	KUNIT_CASE(vrng_bounded_state_space_test),
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_RUST)
 	KUNIT_CASE(vrng_rust_directed_test),

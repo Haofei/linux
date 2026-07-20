@@ -97,6 +97,7 @@ fn decode_code(state: *const VrngCoreState) -> u32 {
     return STATE_INVALID;
 }
 
+#[irq_context]
 fn decode(state: *const VrngCoreState) -> DecodedState {
     switch decode_code(state) {
         0 => { return.ActiveEmpty; }
@@ -167,6 +168,7 @@ export fn vrng_core_mc_begin_submit(maybe_state: ?*mut VrngCoreState, maybe_gene
     return EINVAL;
 }
 
+#[irq_context]
 export fn vrng_core_mc_abort_submit(maybe_state: ?*mut VrngCoreState, generation: u64) -> i32 {
     if let state = maybe_state {
         let decoded: DecodedState = decode(state);

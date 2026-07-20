@@ -20,9 +20,9 @@ Concurrency contract
 
 The glue must serialize every mutable call for a given ``vrng_core_state``.
 This is also the unsafe precondition that permits the Rust implementation to
-construct one exclusive reference from the FFI pointer.  ``complete`` is
-IRQ-callable and therefore must not allocate, block, execute an unbounded loop,
-panic, or take a language trap.
+construct one exclusive reference from the FFI pointer.  ``complete`` and
+``abort_submit`` are IRQ-callable and therefore must not allocate, block,
+execute an unbounded loop, panic, or take a language trap.
 
 The state has independent lifecycle and buffer dimensions::
 
@@ -40,6 +40,13 @@ queue token is an embedded cookie containing the device, epoch, generation, and
 request identifier; its contents remain immutable while the descriptor is
 queued.  The callback passes the cookie generation to the core and never
 reconstructs it from current mutable state.
+
+This identity contract trusts the virtqueue to map one used entry to its
+currently outstanding token.  It detects stale generations presented with a
+valid token; it does not claim to distinguish arbitrary used-ring identifier
+replay after descriptor/token reuse.  Such transport-level protocol violations
+require a separate fault model and are not covered by the local stale-generation
+injection.
 
 Errors
 ======
@@ -107,8 +114,10 @@ published baseline ran twelve tests on x86-64, arm64, and riscv64 QEMU kernels,
 plus three shadow tests, and passed under KCSAN and a combined
 KASAN/UBSAN/lockdep/debug-atomic-sleep x86-64 configuration.  The M3.5 patch
 adds per-language pointer/state/output contract tests and a queued-cookie
-generation test.  The normal x86-64 configuration passes all 19 KUnit tests.
-C, Rust, and MC objects cross-build for all three architectures;
+generation test.  The normal x86-64 configuration passes all 20 KUnit tests;
+the C-only shadow-disabled configuration passes 10/10, including absolute-index
+and remaining-length partial-copy accounting.  C, Rust, and MC objects
+cross-build for all three architectures;
 ``mcc emit-layout`` reports the expected 40-byte MC C-ABI layout.
 
 The M0 object-toolchain gate is now closed.  MC's ``--linux-kernel`` LLVM
@@ -135,9 +144,15 @@ glue owns the queue and DMA storage, propagates queue-add errors, and uses
 generation cookies whose contents remain immutable while queued.  It resubmits
 zero/oversize completions from a preallocated work item after the reader
 observes the stored error and serializes process copy/resubmit against removal.
-The normal x86-64 live PCI test passed a read/unbind race with 11,810 matching
-protocol events.  Fault injection, sanitizer configurations, and
-arm64/riscv64 requalification remain required before M4 can start.
+Rollback failure is fatal rather than retryable, and restore registration
+failure executes the complete queue/work/core unwind.  Copy comparison stages
+all three implementations in private canary buffers and publishes only the
+validated C result.
+The normal x86-64 live PCI tests passed shadow-disabled ``bs=1/3/7`` reads and a
+shadow run that reached the held-completion synchronization point before
+unbind, with 445 matching protocol events.  Completion/add fault matrices,
+sanitizer configurations, and arm64/riscv64 requalification remain required
+before M4 can start.
 
 Rust and MC remain shadows rather than selectable controlling cores.
 ``#[irq_context]`` verifies the MC
@@ -156,6 +171,9 @@ Run the differential suite under QEMU with::
     --arch=x86_64 --make_options LLVM=1 \
     --make_options MCC=/absolute/path/to/mcc \
     --kunitconfig drivers/char/hw_random/virtio_rng_lang
+
+Use ``virtio_rng_lang/kunitconfig-no-shadow`` to compile and exercise the
+ordinary driver branch without Rust, MC, or shadow control.
 
 The suite covers directed boundary cases and a breadth-first exploration of
 the event graph through depth seven at capacity three.  Every explored event

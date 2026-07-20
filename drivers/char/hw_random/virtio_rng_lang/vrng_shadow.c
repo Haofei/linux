@@ -238,6 +238,7 @@ int vrng_shadow_copy(struct vrng_shadow *shadow, const u8 *dma_buffer,
 		     u8 *destination, u32 requested, u32 *copied,
 		     u32 *need_resubmit)
 {
+	u8 c_buffer[VRNG_SHADOW_MAX_COPY];
 	u8 rust_buffer[VRNG_SHADOW_MAX_COPY];
 	u8 mc_buffer[VRNG_SHADOW_MAX_COPY];
 	unsigned long flags;
@@ -251,16 +252,17 @@ int vrng_shadow_copy(struct vrng_shadow *shadow, const u8 *dma_buffer,
 		c_result = -ENODEV;
 		goto unlock;
 	}
+	memset(c_buffer, 0xa5, sizeof(c_buffer));
 	memset(rust_buffer, 0xa5, sizeof(rust_buffer));
 	memset(mc_buffer, 0xa5, sizeof(mc_buffer));
-	c_result = vrng_core_c_copy(&shadow->c_state, dma_buffer, destination,
+	c_result = vrng_core_c_copy(&shadow->c_state, dma_buffer, c_buffer,
 				    requested, &c_copied, &c_resubmit);
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_RUST)
 	rust_result = vrng_core_rust_copy(&shadow->rust_state, dma_buffer,
 					  rust_buffer, requested, &rust_copied,
 					  &rust_resubmit);
-	bytes_differ |= c_copied != rust_copied ||
-		memcmp(destination, rust_buffer, c_copied);
+	bytes_differ |= c_copied != rust_copied;
+	bytes_differ |= memcmp(c_buffer, rust_buffer, sizeof(c_buffer));
 #else
 	rust_result = c_result;
 	rust_copied = c_copied;
@@ -270,8 +272,8 @@ int vrng_shadow_copy(struct vrng_shadow *shadow, const u8 *dma_buffer,
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_MC)
 	mc_result = vrng_core_mc_copy(&shadow->mc_state, dma_buffer, mc_buffer,
 				      requested, &mc_copied, &mc_resubmit);
-	bytes_differ |= c_copied != mc_copied ||
-		memcmp(destination, mc_buffer, c_copied);
+	bytes_differ |= c_copied != mc_copied;
+	bytes_differ |= memcmp(c_buffer, mc_buffer, sizeof(c_buffer));
 #else
 	mc_result = c_result;
 	mc_copied = c_copied;
@@ -280,6 +282,25 @@ int vrng_shadow_copy(struct vrng_shadow *shadow, const u8 *dma_buffer,
 #endif
 	bytes_differ |= c_resubmit != rust_resubmit ||
 			c_resubmit != mc_resubmit;
+	bytes_differ |= c_copied > sizeof(c_buffer) ||
+		memchr_inv(c_buffer + min_t(u32, c_copied, sizeof(c_buffer)),
+			   0xa5, sizeof(c_buffer) -
+			   min_t(u32, c_copied, sizeof(c_buffer)));
+#if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_RUST)
+	bytes_differ |= rust_copied > sizeof(rust_buffer) ||
+		memchr_inv(rust_buffer +
+			   min_t(u32, rust_copied, sizeof(rust_buffer)), 0xa5,
+			   sizeof(rust_buffer) -
+			   min_t(u32, rust_copied, sizeof(rust_buffer)));
+#endif
+#if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_MC)
+	bytes_differ |= mc_copied > sizeof(mc_buffer) ||
+		memchr_inv(mc_buffer + min_t(u32, mc_copied, sizeof(mc_buffer)),
+			   0xa5, sizeof(mc_buffer) -
+			   min_t(u32, mc_copied, sizeof(mc_buffer)));
+#endif
+	if (!c_result && c_copied <= sizeof(c_buffer) && c_copied)
+		memcpy(destination, c_buffer, c_copied);
 	vrng_shadow_record(shadow, VRNG_SHADOW_COPY, c_result, rust_result,
 			   mc_result, c_copied, rust_copied, mc_copied,
 			   bytes_differ);

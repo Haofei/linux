@@ -21,6 +21,7 @@
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
 #include "virtio_rng_lang/vrng_shadow.h"
 #endif
+#include "virtio_rng_internal.h"
 
 static DEFINE_IDA(rng_index_ida);
 
@@ -28,16 +29,24 @@ static DEFINE_IDA(rng_index_ida);
 static int vrng_lang_fail_add_once;
 static int vrng_lang_completion_override = -1;
 static int vrng_lang_stale_once;
+static int vrng_lang_hold_completion;
+static int vrng_lang_completion_held;
 module_param_named(lang_fail_add_once, vrng_lang_fail_add_once, int, 0600);
 module_param_named(lang_completion_override, vrng_lang_completion_override,
 		   int, 0600);
 module_param_named(lang_stale_once, vrng_lang_stale_once, int, 0600);
+module_param_named(lang_hold_completion, vrng_lang_hold_completion, int, 0600);
+module_param_named(lang_completion_held, vrng_lang_completion_held, int, 0400);
 MODULE_PARM_DESC(lang_fail_add_once,
 		 "fail the next experimental virtqueue submission");
 MODULE_PARM_DESC(lang_completion_override,
 		 "replace the next experimental completion length (-1 disables)");
 MODULE_PARM_DESC(lang_stale_once,
 		 "use a stale generation for the next experimental completion");
+MODULE_PARM_DESC(lang_hold_completion,
+		 "consume and hold the next experimental completion for removal tests");
+MODULE_PARM_DESC(lang_completion_held,
+		 "indicate that an experimental completion is currently held");
 #endif
 
 struct virtrng_info;
@@ -57,6 +66,7 @@ struct virtrng_info {
 	bool hwrng_register_done;
 	bool hwrng_removed;
 	bool cleanup_pending;
+	bool fatal_error;
 	/* Serializes process-context copy, resubmit, retry, and removal. */
 	struct mutex process_lock;
 	struct delayed_work refill_work;
@@ -90,6 +100,14 @@ static void publish_data_error(struct virtrng_info *vi, int error)
 	complete(&vi->have_data);
 }
 
+#if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
+static void publish_fatal_error(struct virtrng_info *vi, int error)
+{
+	WRITE_ONCE(vi->fatal_error, true);
+	publish_data_error(vi, error);
+}
+#endif
+
 static void refill_entropy(struct work_struct *work)
 {
 	struct virtrng_info *vi =
@@ -114,7 +132,7 @@ static void random_recv_done(struct virtqueue *vq)
 	unsigned int len;
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
 	u64 generation;
-	int err;
+	int err, recovery_err;
 #endif
 
 	/* We can get spurious callbacks, e.g. shared IRQs + virtio_pci. */
@@ -125,6 +143,10 @@ static void random_recv_done(struct virtqueue *vq)
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
 	if (WARN_ON_ONCE(cookie != &vi->cookie || cookie->vi != vi))
 		return;
+	if (READ_ONCE(vrng_lang_hold_completion)) {
+		WRITE_ONCE(vrng_lang_completion_held, 1);
+		return;
+	}
 	if (READ_ONCE(vrng_lang_completion_override) >= 0)
 		len = xchg(&vrng_lang_completion_override, -1);
 	generation = cookie->generation;
@@ -132,8 +154,13 @@ static void random_recv_done(struct virtqueue *vq)
 		generation--;
 	err = vrng_shadow_complete(&vi->shadow, generation, len, NULL);
 	if (err) {
-		if (err == -ESTALE)
-			vrng_shadow_recover_consumed(&vi->shadow);
+		if (err == -ESTALE) {
+			recovery_err = vrng_shadow_recover_consumed(&vi->shadow);
+			if (recovery_err) {
+				publish_fatal_error(vi, recovery_err);
+				return;
+			}
+		}
 		publish_data_error(vi, err);
 		return;
 	}
@@ -159,6 +186,8 @@ static int request_entropy_locked(struct virtrng_info *vi)
 	lockdep_assert_held(&vi->process_lock);
 	if (vi->hwrng_removed)
 		return -ENODEV;
+	if (vi->fatal_error)
+		return -EIO;
 
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
 	err = vrng_shadow_begin_submit(&vi->shadow, &generation);
@@ -182,7 +211,13 @@ static int request_entropy_locked(struct virtrng_info *vi)
 		err = virtqueue_add_inbuf(vi->vq, &sg, 1, token, GFP_KERNEL);
 	if (err) {
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
-		vrng_shadow_abort_submit(&vi->shadow, generation);
+		int abort_err;
+
+		abort_err = vrng_shadow_abort_submit(&vi->shadow, generation);
+		if (abort_err) {
+			WRITE_ONCE(vi->fatal_error, true);
+			return abort_err;
+		}
 #endif
 		return err;
 	}
@@ -211,36 +246,35 @@ static int copy_data_locked(struct virtrng_info *vi, void *buf,
 	}
 	return copied;
 #else
-	unsigned int idx, avail;
+	int copied;
 
 	lockdep_assert_held(&vi->process_lock);
 
 	/*
 	 * vi->data_avail was set from the device-reported used.len and
 	 * vi->data_idx was advanced by previous copy_data() calls.  A
-	 * malicious or buggy virtio-rng backend can drive either past
-	 * sizeof(vi->data).  Clamp at point of use and harden the index
-	 * with array_index_nospec() so the memcpy() below cannot be
-	 * steered into adjacent slab memory, including under
-	 * speculation.
+	 * malicious or buggy virtio-rng backend can drive their sum past
+	 * sizeof(vi->data). Validate the absolute-index/remaining-length pair
+	 * and harden the index with array_index_nospec() so the copy cannot be
+	 * steered into adjacent slab memory, including under speculation.
 	 */
-	avail = min_t(unsigned int, vi->data_avail, sizeof(vi->data));
-	if (vi->data_idx >= avail) {
+	copied = virtrng_copy_available(vi->data, sizeof(vi->data),
+					&vi->data_idx, &vi->data_avail, buf,
+					size);
+	if (copied < 0) {
+		vi->data_idx = 0;
 		vi->data_avail = 0;
 		err = request_entropy_locked(vi);
-		return err ?: 0;
+		if (err)
+			publish_data_error(vi, err);
+		return copied;
 	}
-	size = min_t(unsigned int, size, avail - vi->data_idx);
-	idx = array_index_nospec(vi->data_idx, sizeof(vi->data));
-	memcpy(buf, vi->data + idx, size);
-	vi->data_idx += size;
-	vi->data_avail -= size;
 	if (vi->data_avail == 0) {
 		err = request_entropy_locked(vi);
 		if (err)
 			publish_data_error(vi, err);
 	}
-	return size;
+	return copied;
 #endif
 }
 
@@ -266,7 +300,8 @@ static int virtio_read(struct hwrng *rng, void *buf, size_t size, bool wait)
 		}
 		pending_error = xchg(&vi->data_error, 0);
 		if (pending_error) {
-			mod_delayed_work(system_wq, &vi->refill_work, 0);
+			if (!READ_ONCE(vi->fatal_error))
+				mod_delayed_work(system_wq, &vi->refill_work, 0);
 			mutex_unlock(&vi->process_lock);
 			return read ?: pending_error;
 		}
@@ -338,6 +373,7 @@ static int probe_common(struct virtio_device *vdev)
 	err = vrng_shadow_init(&vi->shadow, sizeof(vi->data));
 	if (err)
 		goto err_request;
+	WRITE_ONCE(vrng_lang_completion_held, 0);
 #endif
 	mutex_lock(&vi->process_lock);
 	err = request_entropy_locked(vi);
@@ -361,6 +397,9 @@ err_ida:
 static void remove_common(struct virtio_device *vdev)
 {
 	struct virtrng_info *vi = vdev->priv;
+
+	if (!vi)
+		return;
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
 	struct vrng_shadow_mismatch last;
 	u64 events, mismatches;
@@ -397,6 +436,7 @@ static void remove_common(struct virtio_device *vdev)
 			 events);
 #endif
 	ida_free(&rng_index_ida, vi->index);
+	vdev->priv = NULL;
 	kfree(vi);
 }
 
@@ -418,6 +458,8 @@ static void virtrng_scan(struct virtio_device *vdev)
 	err = hwrng_register(&vi->hwrng);
 	if (!err)
 		vi->hwrng_register_done = true;
+	else
+		remove_common(vdev);
 }
 
 static int virtrng_freeze(struct virtio_device *vdev)
@@ -444,6 +486,8 @@ static int virtrng_restore(struct virtio_device *vdev)
 		if (!err) {
 			vi->hwrng_register_done = true;
 			vi->hwrng_removed = false;
+		} else {
+			remove_common(vdev);
 		}
 	}
 

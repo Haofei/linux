@@ -29,14 +29,15 @@ enum vrng_buffer_phase {
  *
  * state is naturally aligned and covers sizeof(*state) bytes. Mutable calls
  * have exclusive access for the call. Each non-NULL output is naturally
- * aligned, writable, and aliases neither state nor another output. For copy(),
- * dma_buffer covers state->capacity bytes, destination covers
- * min(requested, state->data_avail) bytes, and the ranges do not overlap.
+ * aligned and writable.  state, every output object, dma_buffer's capacity-byte
+ * range, and destination's min(requested, state->data_avail)-byte range are
+ * pairwise non-overlapping.
  *
  * Every non-NULL output is zeroed before validating the complete output set,
  * state representation, data pointers, lifecycle, or phase, in that order.
- * complete() is IRQ-safe; copy() and lifecycle operations run in process
- * context under the common glue's serialization.
+ * abort_submit() and complete() are IRQ-safe. copy() and the remaining
+ * lifecycle operations run in process context under the common glue's
+ * serialization.
  */
 struct vrng_core_state {
 	u32 abi_version;
