@@ -254,6 +254,59 @@ config HW_RANDOM_VIRTIO
 	  To compile this driver as a module, choose M here: the
 	  module will be called virtio-rng.  If unsure, say N.
 
+config HW_RANDOM_VIRTIO_LANG_CORE
+	bool
+	help
+	  Internal build switch for the experimental virtio-rng language cores.
+
+config HW_RANDOM_VIRTIO_LANG_KUNIT_TEST
+	bool "KUnit tests for the virtio-rng language core" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	select HW_RANDOM_VIRTIO_LANG_CORE
+	default KUNIT_ALL_TESTS
+	help
+	  Build the executable protocol specification, the experimental C core,
+	  and differential tests for the C/Rust/MC virtio-rng experiment.  These
+	  tests do not access a virtio device or alter the production driver.
+
+	  If unsure, say N.
+
+config HW_RANDOM_VIRTIO_LANG_RUST
+	bool "Rust core for the virtio-rng language experiment"
+	depends on HW_RANDOM_VIRTIO_LANG_CORE
+	depends on RUST
+	default y
+	help
+	  Build the Rust implementation of the experimental logical buffer
+	  protocol.  Differential KUnit and optional live shadow mode call it,
+	  but it does not control the production virtio-rng driver.
+	  The option exists for language-comparison experiments and is not a
+	  replacement for the production driver.
+
+config HW_RANDOM_VIRTIO_LANG_MC
+	bool "MC core for the virtio-rng language experiment"
+	depends on HW_RANDOM_VIRTIO_LANG_CORE
+	help
+	  Build the MC implementation of the experimental logical buffer
+	  protocol through the MC LLVM backend.  Set MCC to the MC compiler
+	  executable when building.  This option is experimental and off by
+	  default because MC is not part of the Linux toolchain.  It does not
+	  control the production virtio-rng driver.
+
+config HW_RANDOM_VIRTIO_LANG_SHADOW
+	bool "Shadow the virtio-rng protocol in C, Rust, and MC"
+	depends on HW_RANDOM_VIRTIO=y
+	select HW_RANDOM_VIRTIO_LANG_CORE
+	help
+	  Mirror live virtio-rng submit, completion, copy, and removal events into
+	  the experimental language cores.  The production C driver remains the
+	  sole owner of the virtqueue and DMA buffer; shadow results never control
+	  device behavior.  Mismatches are retained in a bounded preallocated
+	  record and reported during device removal.
+
+	  Enable the Rust and MC core options above to include those candidates.
+	  If unsure, say N.
+
 config HW_RANDOM_MXC_RNGA
 	tristate "Freescale i.MX RNGA Random Number Generator"
 	depends on SOC_IMX31 || COMPILE_TEST

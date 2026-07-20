@@ -21,6 +21,48 @@ obj-$(CONFIG_HW_RANDOM_OMAP) += omap-rng.o
 obj-$(CONFIG_HW_RANDOM_OMAP3_ROM) += omap3-rom-rng.o
 obj-$(CONFIG_HW_RANDOM_PASEMI) += pasemi-rng.o
 obj-$(CONFIG_HW_RANDOM_VIRTIO) += virtio-rng.o
+obj-$(CONFIG_HW_RANDOM_VIRTIO_LANG_CORE) += virtio_rng_lang_core.o
+virtio_rng_lang_core-y := virtio_rng_lang/vrng_core_c.o
+virtio_rng_lang_core-$(CONFIG_HW_RANDOM_VIRTIO_LANG_RUST) += \
+	virtio_rng_lang/vrng_core_rust.o
+virtio_rng_lang_core-$(CONFIG_HW_RANDOM_VIRTIO_LANG_MC) += \
+	virtio_rng_lang/vrng_core_mc.o
+obj-$(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW) += \
+	virtio_rng_lang/vrng_shadow.o
+obj-$(CONFIG_HW_RANDOM_VIRTIO_LANG_KUNIT_TEST) += virtio_rng_lang_test.o
+virtio_rng_lang_test-y := \
+	virtio_rng_lang/vrng_core_spec.o \
+	virtio_rng_lang/vrng_kunit.o
+
+vrng_mc_arch-$(CONFIG_X86_64) := x86_64
+vrng_mc_arch-$(CONFIG_ARM64) := aarch64
+vrng_mc_arch-$(CONFIG_RISCV) := riscv64
+vrng_mc_flags-x86_64 := --target=x86_64-unknown-unknown-elf -O2 -fno-pic \
+	-fno-asynchronous-unwind-tables \
+	-fno-jump-tables -mno-red-zone -mcmodel=kernel -mno-sse -mno-mmx \
+	-mno-sse2 -mno-3dnow -mno-avx -fcf-protection=branch \
+	-mretpoline-external-thunk -mindirect-branch-cs-prefix \
+	-mfunction-return=thunk-extern -fpatchable-function-entry=16,16
+vrng_mc_flags-aarch64 := --target=aarch64-unknown-unknown-elf -O2 -fno-pic \
+	-fno-asynchronous-unwind-tables -fno-jump-tables -mgeneral-regs-only \
+	-mbranch-protection=bti
+vrng_mc_flags-riscv64 := --target=riscv64-unknown-unknown-elf -O2 -fno-pic \
+	-fno-asynchronous-unwind-tables -fno-jump-tables
+
+quiet_cmd_vrng_mcc = MCC     $@
+      cmd_vrng_mcc = $(MCC) emit-llvm $< \
+		--arch=$(vrng_mc_arch-y) --checks=elide-proven --linux-kernel \
+		-o $(patsubst %.o,%.ll,$@) && \
+	$(CC) -c -x ir $(vrng_mc_flags-$(vrng_mc_arch-y)) \
+		$(patsubst %.o,%.ll,$@) -o $@
+
+vrng_mcc_deps := $(MCC) $(wildcard $(MCC)-real)
+
+$(obj)/virtio_rng_lang/vrng_core_mc.o: \
+		$(src)/virtio_rng_lang/vrng_core_mc.mc $(vrng_mcc_deps) FORCE
+	$(call if_changed,vrng_mcc)
+
+targets += virtio_rng_lang/vrng_core_mc.ll
 obj-$(CONFIG_HW_RANDOM_MXC_RNGA) += mxc-rnga.o
 obj-$(CONFIG_HW_RANDOM_IMX_RNGC) += imx-rngc.o
 obj-$(CONFIG_HW_RANDOM_INGENIC_RNG) += ingenic-rng.o

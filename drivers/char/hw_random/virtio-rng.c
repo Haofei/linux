@@ -16,6 +16,10 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 
+#if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
+#include "virtio_rng_lang/vrng_shadow.h"
+#endif
+
 static DEFINE_IDA(rng_index_ida);
 
 struct virtrng_info {
@@ -37,6 +41,9 @@ struct virtrng_info {
 	u8 data[SMP_CACHE_BYTES];
 #endif
 	__dma_from_device_group_end();
+#if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
+	struct vrng_shadow shadow;
+#endif
 };
 
 static void random_recv_done(struct virtqueue *vq)
@@ -48,6 +55,9 @@ static void random_recv_done(struct virtqueue *vq)
 	if (!virtqueue_get_buf(vi->vq, &len))
 		return;
 
+#if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
+	vrng_shadow_complete(&vi->shadow, len);
+#endif
 	smp_store_release(&vi->data_avail, len);
 	complete(&vi->have_data);
 }
@@ -55,6 +65,9 @@ static void random_recv_done(struct virtqueue *vq)
 static void request_entropy(struct virtrng_info *vi)
 {
 	struct scatterlist sg;
+#if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
+	int err;
+#endif
 
 	reinit_completion(&vi->have_data);
 	vi->data_idx = 0;
@@ -62,7 +75,14 @@ static void request_entropy(struct virtrng_info *vi)
 	sg_init_one(&sg, vi->data, sizeof(vi->data));
 
 	/* There should always be room for one buffer. */
+#if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
+	vrng_shadow_begin_submit(&vi->shadow);
+	err = virtqueue_add_inbuf(vi->vq, &sg, 1, vi->data, GFP_KERNEL);
+	if (err)
+		vrng_shadow_abort_submit(&vi->shadow);
+#else
 	virtqueue_add_inbuf(vi->vq, &sg, 1, vi->data, GFP_KERNEL);
+#endif
 
 	virtqueue_kick(vi->vq);
 }
@@ -71,6 +91,10 @@ static unsigned int copy_data(struct virtrng_info *vi, void *buf,
 			      unsigned int size)
 {
 	unsigned int idx, avail;
+
+#if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
+	vrng_shadow_copy(&vi->shadow, vi->data, size);
+#endif
 
 	/*
 	 * vi->data_avail was set from the device-reported used.len and
@@ -183,6 +207,9 @@ static int probe_common(struct virtio_device *vdev)
 	virtio_device_ready(vdev);
 
 	/* we always have a pending entropy request */
+#if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
+	vrng_shadow_init(&vi->shadow, sizeof(vi->data));
+#endif
 	request_entropy(vi);
 
 	return 0;
@@ -197,6 +224,12 @@ err_ida:
 static void remove_common(struct virtio_device *vdev)
 {
 	struct virtrng_info *vi = vdev->priv;
+#if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
+	struct vrng_shadow_mismatch last;
+	u64 events, mismatches;
+
+	vrng_shadow_begin_remove(&vi->shadow);
+#endif
 
 	vi->hwrng_removed = true;
 	vi->data_avail = 0;
@@ -206,6 +239,19 @@ static void remove_common(struct virtio_device *vdev)
 		hwrng_unregister(&vi->hwrng);
 	virtio_reset_device(vdev);
 	vdev->config->del_vqs(vdev);
+#if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
+	vrng_shadow_finish_remove(&vi->shadow);
+	vrng_shadow_snapshot(&vi->shadow, &events, &mismatches, &last);
+	if (mismatches)
+		dev_warn(&vdev->dev,
+			 "language shadow mismatches=%llu events=%llu last_event=%u last_sequence=%llu C=%d Rust=%d MC=%d\n",
+			 mismatches, events, last.event, last.sequence,
+			 last.c_result, last.rust_result, last.mc_result);
+	else
+		dev_info(&vdev->dev,
+			 "language shadow matched all %llu protocol events\n",
+			 events);
+#endif
 	ida_free(&rng_index_ida, vi->index);
 	kfree(vi);
 }
