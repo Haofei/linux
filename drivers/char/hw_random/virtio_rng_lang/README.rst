@@ -237,9 +237,19 @@ ARM host, and the current i440fx configuration has no ``virtio-rng-device``
 bus.  C, Rust, and MC all pass ``rng-random`` under x86 TCG; architecture KUnit
 remains 24/24 on x86-64, arm64, and riscv64.
 
-The next gate is M8: run the deliberate-defect campaign and classify each defect
-as compile-time prevention, runtime detection, common-C responsibility, or
-outside the experiment boundary.
+M8 records 13 deliberate defects as TAP, JUnit XML, and structured JSON.  MC
+compile-time prevention covers device-owned CPU access, declared blocking and
+allocation effects in IRQ context, unbounded IRQ loops, and trap-capable
+callbacks.  Explicit wrapping and Rust ``panic!`` remain expressible and are
+reported as differential/static-policy cases rather than language prevention.
+Fault/hotplug/sanitizer evidence covers completion and removal defects; LKMM
+covers publication ordering.  Nospec and non-coherent cache maintenance remain
+audited common-C responsibilities.  Unmarked allocator effects and surviving C
+DMA aliases are explicitly outside the proved language boundary.
+
+The next gate is M9: collect isolated transition/copy cost, end-to-end
+throughput, section size, build/runtime dependency, and source-boundary metrics
+with raw samples and an environment manifest.
 
 MC contract fixtures
 ====================
@@ -255,3 +265,11 @@ candidate:
   audited Linux-buffer adoption boundary;
 * ``vrng_dma_device_owned_read.mc``: device-owned handle rejected by the CPU
   access API.
+* ``vrng_mc_irq_alloc_gap.mc``: declared allocation effect rejected in IRQ
+  context;
+* ``vrng_mc_irq_trap_gap.mc``: reachable trap rejected by
+  ``#[no_lang_trap]``;
+* ``vrng_mc_wrapping_index_gap.mc``: explicit wrapping remains expressible and
+  requires the executable-spec firewall;
+* ``vrng_rust_panic_gap.rs``: Rust panic remains expressible and is controlled
+  by the production-source panic-free policy.
