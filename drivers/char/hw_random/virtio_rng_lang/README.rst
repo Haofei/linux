@@ -161,9 +161,12 @@ fault matrix recovered from zero-length and oversized completions, a stale
 generation, and one queue-add failure with 1,243 matching events.  The full
 23-test KUnit suite also passes on x86-64, arm64, and riscv64.  A PM-debug live
 run completed three device-level suspend/restore cycles, restored live reads
-after each cycle, and then passed synchronized unbind with zero mismatches.
-Host failure-corpus persistence and transport-level hot-unplug remain required
-before M4 can start.
+after each cycle, and then passed synchronized unbind with zero mismatches; the
+same matrix also passes under KCSAN.  A QMP-controlled PCI hot-unplug terminated
+a reader blocked behind a held completion, removed the transport, re-added a
+fresh virtio-rng device, restored live reads, and then passed the final
+synchronized unbind with zero mismatches.  Host failure-corpus persistence and
+the MC representation-proof gap remain required before M4 can start.
 
 Rust and MC remain shadows rather than selectable controlling cores.
 ``#[irq_context]`` verifies the MC
@@ -204,11 +207,6 @@ Remaining gates before candidate control
    completion path can satisfy ``#[no_lang_trap]``; otherwise retain it as a
    measured language limitation.
 3. Add host differential enumeration with failure-sequence persistence.
-4. Add live fault-injection cases without weakening the production kernel
-   configuration.
-5. Exercise transport-level hot-unplug races and extend the completed basic
-   suspend/restore matrix with KCSAN stress.  Candidate control remains disabled
-   until those cases pass their QEMU gates.
 
 MC contract fixtures
 ====================
