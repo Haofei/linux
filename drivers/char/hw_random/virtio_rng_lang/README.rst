@@ -159,9 +159,11 @@ events.  KCSAN and the combined KASAN/UBSAN/lockdep/DMA-debug live runs passed
 with 1,213 and 1,216 matching events, respectively.  The deterministic live
 fault matrix recovered from zero-length and oversized completions, a stale
 generation, and one queue-add failure with 1,243 matching events.  The full
-23-test KUnit suite also passes on x86-64, arm64, and riscv64.  Host failure-
-corpus persistence, suspend/restore, and transport-level hot-unplug remain
-required before M4 can start.
+23-test KUnit suite also passes on x86-64, arm64, and riscv64.  A PM-debug live
+run completed three device-level suspend/restore cycles, restored live reads
+after each cycle, and then passed synchronized unbind with zero mismatches.
+Host failure-corpus persistence and transport-level hot-unplug remain required
+before M4 can start.
 
 Rust and MC remain shadows rather than selectable controlling cores.
 ``#[irq_context]`` verifies the MC
@@ -204,8 +206,9 @@ Remaining gates before candidate control
 3. Add host differential enumeration with failure-sequence persistence.
 4. Add live fault-injection cases without weakening the production kernel
    configuration.
-5. Exercise suspend/restore and transport-level hot-unplug races.  Candidate
-   control remains disabled until those cases pass KCSAN and QEMU stress.
+5. Exercise transport-level hot-unplug races and extend the completed basic
+   suspend/restore matrix with KCSAN stress.  Candidate control remains disabled
+   until those cases pass their QEMU gates.
 
 MC contract fixtures
 ====================
