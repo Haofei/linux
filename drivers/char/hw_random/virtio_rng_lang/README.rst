@@ -219,8 +219,17 @@ control in addition to the previously qualified C baseline.  These tests model
 CPU publication and wakeup ordering; virtio DMA synchronization remains in the
 transport and common C boundary.
 
-The next gate is M6: exercise a genuine typed DMA ownership variant and record
-the exact external-alias boundary that the language cannot prove.
+M6 adds a separate MC typed-DMA qualification variant.  The audited adoption
+boundary creates one linear CPU-owned handle; handoff consumes it and returns a
+device-owned handle with no CPU access API; reclaim consumes that handle before
+restoring CPU access.  The positive cycle emits Linux-profile LLVM and
+``vrng_dma_device_owned_read.mc`` fails semantic checking.  This proves only the
+typed-handle protocol: Linux allocation/mapping and any C raw alias retained
+outside the adopted capability remain trusted.  The live driver continues to
+use the common-C DMA allocation boundary.
+
+The next gate is M7: emit reproducible TAP results and environment manifests for
+the architecture, lifecycle, transport, and controller matrix.
 
 MC contract fixtures
 ====================
@@ -232,3 +241,7 @@ candidate:
 * ``vrng_mc_irq_unbounded_gap.mc``: ``E_UNBOUNDED_LOOP``;
 * ``vrng_mc_no_trap_gap.mc``: accepted nullable-pointer narrowing and extern-
   struct access under ``#[no_lang_trap]``.
+* ``vrng_dma_ownership.mc``: accepted linear CPU/device ownership cycle over an
+  audited Linux-buffer adoption boundary;
+* ``vrng_dma_device_owned_read.mc``: device-owned handle rejected by the CPU
+  access API.
