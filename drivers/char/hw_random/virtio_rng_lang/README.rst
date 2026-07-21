@@ -207,8 +207,8 @@ code, full state, outputs, and copied bytes.
 The ABI and C, Rust, and MC sources are cross-built and runtime-tested with LLVM
 for arm64 and riscv64.
 
-Next experiment gates
-=====================
+Core qualification
+==================
 
 M5 retains the common-lock baseline.  Herdtools7 7.58 proves that the
 release/acquire publication and completion-lock wakeup models prohibit a reader
@@ -228,43 +228,6 @@ typed-handle protocol: Linux allocation/mapping and any C raw alias retained
 outside the adopted capability remain trusted.  The live driver continues to
 use the common-C DMA allocation boundary.
 
-M7 is recorded by the Modern-C experiment tools as a self-contained evidence
-bundle.  The recorder revalidates logs, rejects kernel diagnostics and shadow
-mismatches, copies logs/configurations, hashes every artifact, and emits TAP,
-JUnit XML, and a versioned JSON environment manifest.  The archived matrix has
-22 passing cases and two explicit skips: x86 KVM is unavailable on the Apple
-ARM host, and the current i440fx configuration has no ``virtio-rng-device``
-bus.  C, Rust, and MC all pass ``rng-random`` under x86 TCG; architecture KUnit
-remains 24/24 on x86-64, arm64, and riscv64.
-
-M8 records 13 deliberate defects as TAP, JUnit XML, and structured JSON.  MC
-compile-time prevention covers device-owned CPU access, declared blocking and
-allocation effects in IRQ context, unbounded IRQ loops, and trap-capable
-callbacks.  Explicit wrapping and Rust ``panic!`` remain expressible and are
-reported as differential/static-policy cases rather than language prevention.
-Fault/hotplug/sanitizer evidence covers completion and removal defects; LKMM
-covers publication ordering.  Nospec and non-coherent cache maintenance remain
-audited common-C responsibilities.  Unmarked allocator effects and surviving C
-DMA aliases are explicitly outside the proved language boundary.
-
-M9 archives 15 raw samples per language/benchmark, compiler wall times, object
-sections and undefined symbols, stack-size metadata where available,
-source/unsafe/FFI counts, and QEMU integration rates.  The clean-source bundle
-is pinned to Linux ``2c91e00c1eae`` and Modern-C ``ac03c949``.  In the x86_64
-Docker container emulated on an Apple M3 Max, median 64-byte control-cycle times
-were 16.093 ns for C, 21.122 ns for Rust, and 29.286 ns for MC.  These are
-environment-specific engineering observations, not bare-metal rankings.
-Object sizes were 12,792, 5,320, and 13,568 bytes; maximum reported stack was
-56 bytes for C and 72 bytes for MC, while Rust emitted no readable stack-size
-metadata.  TCG completion latency and hardware performance counters are
-reported as unavailable.  The compressed evidence SHA-256 is
-``74f889dba7fc2588e068c608d883e4dfd92924786e787afe0f94b92c89436ffe``.
-
-M0-M9 are complete at the documented boundaries.  This is evidence for the
-logical core and its validated publication firewall, not a claim that language
-types own Linux's DMA allocation or replace the trusted virtqueue/common-C
-boundary.
-
 MC contract fixtures
 ====================
 
@@ -279,11 +242,3 @@ candidate:
   audited Linux-buffer adoption boundary;
 * ``vrng_dma_device_owned_read.mc``: device-owned handle rejected by the CPU
   access API.
-* ``vrng_mc_irq_alloc_gap.mc``: declared allocation effect rejected in IRQ
-  context;
-* ``vrng_mc_irq_trap_gap.mc``: reachable trap rejected by
-  ``#[no_lang_trap]``;
-* ``vrng_mc_wrapping_index_gap.mc``: explicit wrapping remains expressible and
-  requires the executable-spec firewall;
-* ``vrng_rust_panic_gap.rs``: Rust panic remains expressible and is controlled
-  by the production-source panic-free policy.
