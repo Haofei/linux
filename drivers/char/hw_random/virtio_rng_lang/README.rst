@@ -228,8 +228,18 @@ typed-handle protocol: Linux allocation/mapping and any C raw alias retained
 outside the adopted capability remain trusted.  The live driver continues to
 use the common-C DMA allocation boundary.
 
-The next gate is M7: emit reproducible TAP results and environment manifests for
-the architecture, lifecycle, transport, and controller matrix.
+M7 is recorded by the Modern-C experiment tools as a self-contained evidence
+bundle.  The recorder revalidates logs, rejects kernel diagnostics and shadow
+mismatches, copies logs/configurations, hashes every artifact, and emits TAP,
+JUnit XML, and a versioned JSON environment manifest.  The archived matrix has
+22 passing cases and two explicit skips: x86 KVM is unavailable on the Apple
+ARM host, and the current i440fx configuration has no ``virtio-rng-device``
+bus.  C, Rust, and MC all pass ``rng-random`` under x86 TCG; architecture KUnit
+remains 24/24 on x86-64, arm64, and riscv64.
+
+The next gate is M8: run the deliberate-defect campaign and classify each defect
+as compile-time prevention, runtime detection, common-C responsibility, or
+outside the experiment boundary.
 
 MC contract fixtures
 ====================
