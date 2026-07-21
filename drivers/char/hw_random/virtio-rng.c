@@ -337,7 +337,7 @@ static int virtio_read(struct hwrng *rng, void *buf, size_t size, bool wait)
 						   &vi->data_error);
 		if (pending_error) {
 			if (!fatal_error)
-				mod_delayed_work(system_wq, &vi->refill_work, 0);
+				mod_delayed_work(system_dfl_wq, &vi->refill_work, 0);
 			mutex_unlock(&vi->process_lock);
 			return read ?: pending_error;
 		}
