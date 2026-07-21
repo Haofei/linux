@@ -380,44 +380,37 @@ static void vrng_copy_contract_for_ops(struct kunit *test,
 	KUNIT_EXPECT_MEMEQ(test, &state, &before, sizeof(state));
 
 	need_resubmit = 99;
-	ret = ops->copy(&state, dma, destination, 1, NULL,
-			&need_resubmit);
+	ret = ops->copy(&state, dma, destination, 1, NULL, &need_resubmit);
 	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
 	KUNIT_EXPECT_EQ(test, need_resubmit, 0U);
 	KUNIT_EXPECT_MEMEQ(test, &state, &before, sizeof(state));
 
 	copied = 99;
 	need_resubmit = 99;
-	ret = ops->copy(&state, NULL, destination, 1, &copied,
-			&need_resubmit);
+	ret = ops->copy(&state, NULL, destination, 1, &copied, &need_resubmit);
 	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
 	KUNIT_EXPECT_EQ(test, copied, 0U);
 	KUNIT_EXPECT_EQ(test, need_resubmit, 0U);
 	KUNIT_EXPECT_MEMEQ(test, &state, &before, sizeof(state));
 
-	ret = ops->copy(&state, dma, destination, 1, &copied,
-			&need_resubmit);
+	ret = ops->copy(&state, dma, destination, 1, &copied, &need_resubmit);
 	KUNIT_EXPECT_EQ(test, ret, -EAGAIN);
 	KUNIT_EXPECT_MEMEQ(test, &state, &before, sizeof(state));
 
 	KUNIT_ASSERT_EQ(test, ops->begin_submit(&state, &generation), 0);
 	before = state;
-	ret = ops->copy(&state, NULL, destination, 1, &copied,
-			&need_resubmit);
+	ret = ops->copy(&state, NULL, destination, 1, &copied, &need_resubmit);
 	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
-	ret = ops->copy(&state, dma, destination, 1, &copied,
-			&need_resubmit);
+	ret = ops->copy(&state, dma, destination, 1, &copied, &need_resubmit);
 	KUNIT_EXPECT_EQ(test, ret, -EBUSY);
 	KUNIT_EXPECT_MEMEQ(test, &state, &before, sizeof(state));
 
 	KUNIT_ASSERT_EQ(test, ops->abort_submit(&state, generation), 0);
 	KUNIT_ASSERT_EQ(test, ops->begin_remove(&state), 0);
 	before = state;
-	ret = ops->copy(&state, NULL, destination, 1, &copied,
-			&need_resubmit);
+	ret = ops->copy(&state, NULL, destination, 1, &copied, &need_resubmit);
 	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
-	ret = ops->copy(&state, dma, destination, 1, &copied,
-			&need_resubmit);
+	ret = ops->copy(&state, dma, destination, 1, &copied, &need_resubmit);
 	KUNIT_EXPECT_EQ(test, ret, -ENODEV);
 	KUNIT_EXPECT_MEMEQ(test, &state, &before, sizeof(state));
 }
@@ -476,20 +469,50 @@ static void vrng_persistent_read_error_test(struct kunit *test)
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
 static void vrng_shadow_copy_output_validation_test(struct kunit *test)
 {
-	KUNIT_EXPECT_TRUE(test,
-			  vrng_shadow_copy_output_valid(0, 4, 8, 4, 0));
-	KUNIT_EXPECT_TRUE(test,
-			  vrng_shadow_copy_output_valid(0, 8, 8, 8, 1));
+	KUNIT_EXPECT_TRUE(test, vrng_shadow_copy_output_valid(0, 4, 8, 4, 0));
+	KUNIT_EXPECT_TRUE(test, vrng_shadow_copy_output_valid(0, 8, 8, 8, 1));
 	KUNIT_EXPECT_TRUE(test,
 			  vrng_shadow_copy_output_valid(-EAGAIN, 4, 0, 0, 0));
-	KUNIT_EXPECT_FALSE(test,
-			   vrng_shadow_copy_output_valid(0, 4, 8, 5, 0));
-	KUNIT_EXPECT_FALSE(test,
-			   vrng_shadow_copy_output_valid(0, 8, 4, 5, 0));
-	KUNIT_EXPECT_FALSE(test,
-			   vrng_shadow_copy_output_valid(0, 4, 8, 4, 2));
+	KUNIT_EXPECT_FALSE(test, vrng_shadow_copy_output_valid(0, 4, 8, 5, 0));
+	KUNIT_EXPECT_FALSE(test, vrng_shadow_copy_output_valid(0, 8, 4, 5, 0));
+	KUNIT_EXPECT_FALSE(test, vrng_shadow_copy_output_valid(0, 4, 8, 4, 2));
 	KUNIT_EXPECT_FALSE(test,
 			   vrng_shadow_copy_output_valid(-EAGAIN, 4, 8, 1, 0));
+	KUNIT_EXPECT_FALSE(test, vrng_shadow_copy_output_valid(1, 4, 8, 0, 0));
+	KUNIT_EXPECT_FALSE(test, vrng_shadow_copy_output_valid(0, 4, 8, 0, 0));
+	KUNIT_EXPECT_FALSE(test, vrng_shadow_copy_output_valid(0, 4, 8, 2, 0));
+}
+
+static void vrng_shadow_control_validation_test(struct kunit *test)
+{
+	struct vrng_core_state state = {
+		.abi_version = VRNG_CORE_ABI_VERSION,
+		.lifecycle = VRNG_ACTIVE,
+		.phase = VRNG_EMPTY,
+		.capacity = 8,
+	};
+	struct vrng_core_state spec_state = state;
+	struct vrng_shadow_mismatch last;
+	struct vrng_shadow shadow;
+	u64 events, generation = 99, mismatches;
+
+	KUNIT_EXPECT_FALSE(test, vrng_shadow_control_valid(1, 0, 0, 0, &state,
+							   &spec_state));
+	KUNIT_EXPECT_TRUE(test, vrng_shadow_control_valid(0, 0, 4, 4, &state,
+							  &spec_state));
+	state.capacity = 7;
+	KUNIT_EXPECT_FALSE(test, vrng_shadow_control_valid(0, 0, 4, 4, &state,
+							   &spec_state));
+
+	KUNIT_ASSERT_EQ(test, vrng_shadow_init(&shadow, 8), 0);
+	shadow.c_state.capacity = 7;
+	KUNIT_EXPECT_EQ(test, vrng_shadow_begin_submit(&shadow, &generation),
+			-EPROTO);
+	KUNIT_EXPECT_EQ(test, generation, 0ULL);
+	vrng_shadow_snapshot(&shadow, &events, &mismatches, &last);
+	KUNIT_EXPECT_EQ(test, events, 2ULL);
+	KUNIT_EXPECT_EQ(test, mismatches, 1ULL);
+	KUNIT_EXPECT_EQ(test, last.spec_result, 0);
 }
 #endif
 
@@ -705,21 +728,24 @@ static void vrng_shadow_normal_sequence_test(struct kunit *test)
 	u64 events, mismatches;
 
 	KUNIT_ASSERT_EQ(test, vrng_shadow_init(&shadow, sizeof(dma)), 0);
-	KUNIT_ASSERT_EQ(test,
-			vrng_shadow_begin_submit(&shadow, &generation), 0);
+	KUNIT_ASSERT_EQ(test, vrng_shadow_begin_submit(&shadow, &generation),
+			0);
 	KUNIT_ASSERT_EQ(test,
 			vrng_shadow_complete(&shadow, generation, sizeof(dma),
-					     &need_resubmit), 0);
+					     &need_resubmit),
+			0);
 	KUNIT_ASSERT_EQ(test,
 			vrng_shadow_copy(&shadow, dma, destination, 3, &copied,
-					 &need_resubmit), 0);
+					 &need_resubmit),
+			0);
 	KUNIT_EXPECT_EQ(test, copied, 3U);
 	KUNIT_ASSERT_EQ(test,
 			vrng_shadow_copy(&shadow, dma, destination + 3, 5,
-					 &copied, &need_resubmit), 0);
+					 &copied, &need_resubmit),
+			0);
 	KUNIT_EXPECT_EQ(test, need_resubmit, 1U);
-	KUNIT_ASSERT_EQ(test,
-			vrng_shadow_begin_submit(&shadow, &generation), 0);
+	KUNIT_ASSERT_EQ(test, vrng_shadow_begin_submit(&shadow, &generation),
+			0);
 	vrng_shadow_begin_remove(&shadow);
 	vrng_shadow_finish_remove(&shadow);
 	vrng_shadow_snapshot(&shadow, &events, &mismatches, &last);
@@ -738,10 +764,9 @@ static void vrng_shadow_abort_sequence_test(struct kunit *test)
 	u64 events, mismatches;
 
 	KUNIT_ASSERT_EQ(test, vrng_shadow_init(&shadow, 8), 0);
-	KUNIT_ASSERT_EQ(test,
-			vrng_shadow_begin_submit(&shadow, &generation), 0);
-	KUNIT_ASSERT_EQ(test,
-			vrng_shadow_abort_submit(&shadow, generation), 0);
+	KUNIT_ASSERT_EQ(test, vrng_shadow_begin_submit(&shadow, &generation),
+			0);
+	KUNIT_ASSERT_EQ(test, vrng_shadow_abort_submit(&shadow, generation), 0);
 	vrng_shadow_begin_remove(&shadow);
 	vrng_shadow_finish_remove(&shadow);
 	vrng_shadow_snapshot(&shadow, &events, &mismatches, &last);
@@ -759,21 +784,22 @@ static void vrng_shadow_cookie_generation_test(struct kunit *test)
 	u64 events, generation, mismatches;
 
 	KUNIT_ASSERT_EQ(test, vrng_shadow_init(&shadow, 8), 0);
-	KUNIT_ASSERT_EQ(test,
-			vrng_shadow_begin_submit(&shadow, &generation), 0);
+	KUNIT_ASSERT_EQ(test, vrng_shadow_begin_submit(&shadow, &generation),
+			0);
 	KUNIT_EXPECT_EQ(test,
 			vrng_shadow_complete(&shadow, generation - 1, 4,
-					     &need_resubmit), -ESTALE);
+					     &need_resubmit),
+			-ESTALE);
 	KUNIT_EXPECT_EQ(test, need_resubmit, 0U);
-	KUNIT_EXPECT_EQ(test, shadow.c_state.phase,
-			(u32)VRNG_DEVICE_OWNED);
+	KUNIT_EXPECT_EQ(test, shadow.c_state.phase, (u32)VRNG_DEVICE_OWNED);
 	KUNIT_ASSERT_EQ(test, vrng_shadow_recover_consumed(&shadow), 0);
 	KUNIT_EXPECT_EQ(test, shadow.c_state.phase, (u32)VRNG_EMPTY);
-	KUNIT_ASSERT_EQ(test,
-			vrng_shadow_begin_submit(&shadow, &generation), 0);
+	KUNIT_ASSERT_EQ(test, vrng_shadow_begin_submit(&shadow, &generation),
+			0);
 	KUNIT_EXPECT_EQ(test,
 			vrng_shadow_complete(&shadow, generation, 4,
-					     &need_resubmit), 0);
+					     &need_resubmit),
+			0);
 	vrng_shadow_snapshot(&shadow, &events, &mismatches, &last);
 	KUNIT_EXPECT_EQ(test, events, 6ULL);
 	KUNIT_EXPECT_EQ(test, mismatches, 0ULL);
@@ -829,6 +855,7 @@ static struct kunit_case vrng_core_test_cases[] = {
 #endif
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
 	KUNIT_CASE(vrng_shadow_copy_output_validation_test),
+	KUNIT_CASE(vrng_shadow_control_validation_test),
 	KUNIT_CASE(vrng_shadow_normal_sequence_test),
 	KUNIT_CASE(vrng_shadow_abort_sequence_test),
 	KUNIT_CASE(vrng_shadow_cookie_generation_test),

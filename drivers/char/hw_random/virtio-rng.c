@@ -99,6 +99,8 @@ static int request_entropy_locked(struct virtrng_info *vi);
 
 static void publish_data_error(struct virtrng_info *vi, int error)
 {
+	if (WARN_ON_ONCE(error >= 0))
+		error = -EPROTO;
 	WRITE_ONCE(vi->data_error, error);
 	/* Publish the error before waking readers that acquire data_avail. */
 	smp_store_release(&vi->data_avail, 0);
@@ -171,6 +173,10 @@ static void random_recv_done(struct virtqueue *vq)
 		generation--;
 	err = vrng_shadow_complete(&vi->shadow, generation, len, NULL);
 	if (err) {
+		if (err == -EPROTO) {
+			publish_fatal_error(vi, err);
+			return;
+		}
 		if (err == -ESTALE) {
 			recovery_err = vrng_shadow_recover_consumed(&vi->shadow);
 			if (recovery_err) {
@@ -209,8 +215,11 @@ static int request_entropy_locked(struct virtrng_info *vi)
 
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
 	err = vrng_shadow_begin_submit(&vi->shadow, &generation);
-	if (err)
+	if (err) {
+		if (err == -EPROTO)
+			publish_fatal_error(vi, err);
 		return err;
+	}
 	vi->cookie.vi = vi;
 	vi->cookie.epoch = vi->shadow.c_state.epoch;
 	vi->cookie.generation = generation;
@@ -462,9 +471,10 @@ static void remove_common(struct virtio_device *vdev)
 	vrng_shadow_snapshot(&vi->shadow, &events, &mismatches, &last);
 	if (mismatches)
 		dev_warn(&vdev->dev,
-			 "language shadow mismatches=%llu events=%llu last_event=%u last_sequence=%llu C=%d Rust=%d MC=%d\n",
+			 "language shadow mismatches=%llu events=%llu last_event=%u last_sequence=%llu C=%d Rust=%d MC=%d spec=%d\n",
 			 mismatches, events, last.event, last.sequence,
-			 last.c_result, last.rust_result, last.mc_result);
+			 last.c_result, last.rust_result, last.mc_result,
+			 last.spec_result);
 	else
 		dev_info(&vdev->dev,
 			 "language shadow matched all %llu protocol events\n",

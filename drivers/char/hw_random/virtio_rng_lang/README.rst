@@ -114,7 +114,7 @@ published baseline ran twelve tests on x86-64, arm64, and riscv64 QEMU kernels,
 plus three shadow tests, and passed under KCSAN and a combined
 KASAN/UBSAN/lockdep/debug-atomic-sleep x86-64 configuration.  The M3.5 patch
 adds per-language pointer/state/output contract tests and a queued-cookie
-generation test.  The normal x86-64 configuration passes all 22 KUnit tests;
+generation test.  The normal x86-64 configuration passes all 23 KUnit tests;
 the C-only shadow-disabled configuration passes 11/11, including persistent
 fatal-error visibility, controlling-output validation, absolute-index,
 and remaining-length partial-copy accounting.  C, Rust, and MC objects
@@ -149,7 +149,9 @@ Fatal errors remain visible to every later reader, probe and restore failures
 clear published ownership state, and restore registration state is synchronized
 with readers and removal.  Copy comparison stages all three implementations in
 private canary buffers and publishes only a C result bounded by the request and
-pre-call available bytes.
+pre-call available bytes.  Every controlling transition is also run against an
+independent executable-specification state; return code, outputs, post-state,
+and copied bytes must match before the result can affect the live driver.
 The normal x86-64 live PCI tests passed a forced three-byte driver copy limit in
 both shadow-disabled and shadow builds.  The shadow run reached the held-
 completion synchronization point before unbind with 1,213 matching protocol

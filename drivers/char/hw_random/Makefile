@@ -22,7 +22,9 @@ obj-$(CONFIG_HW_RANDOM_OMAP3_ROM) += omap3-rom-rng.o
 obj-$(CONFIG_HW_RANDOM_PASEMI) += pasemi-rng.o
 obj-$(CONFIG_HW_RANDOM_VIRTIO) += virtio-rng.o
 obj-$(CONFIG_HW_RANDOM_VIRTIO_LANG_CORE) += virtio_rng_lang_core.o
-virtio_rng_lang_core-y := virtio_rng_lang/vrng_core_c.o
+virtio_rng_lang_core-y := \
+	virtio_rng_lang/vrng_core_c.o \
+	virtio_rng_lang/vrng_core_spec.o
 virtio_rng_lang_core-$(CONFIG_HW_RANDOM_VIRTIO_LANG_RUST) += \
 	virtio_rng_lang/vrng_core_rust.o
 virtio_rng_lang_core-$(CONFIG_HW_RANDOM_VIRTIO_LANG_MC) += \
@@ -30,9 +32,7 @@ virtio_rng_lang_core-$(CONFIG_HW_RANDOM_VIRTIO_LANG_MC) += \
 obj-$(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW) += \
 	virtio_rng_lang/vrng_shadow.o
 obj-$(CONFIG_HW_RANDOM_VIRTIO_LANG_KUNIT_TEST) += virtio_rng_lang_test.o
-virtio_rng_lang_test-y := \
-	virtio_rng_lang/vrng_core_spec.o \
-	virtio_rng_lang/vrng_kunit.o
+virtio_rng_lang_test-y := virtio_rng_lang/vrng_kunit.o
 
 vrng_mc_arch-$(CONFIG_X86_64) := x86_64
 vrng_mc_arch-$(CONFIG_ARM64) := aarch64
