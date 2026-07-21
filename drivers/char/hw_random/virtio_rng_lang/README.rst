@@ -247,9 +247,23 @@ covers publication ordering.  Nospec and non-coherent cache maintenance remain
 audited common-C responsibilities.  Unmarked allocator effects and surviving C
 DMA aliases are explicitly outside the proved language boundary.
 
-The next gate is M9: collect isolated transition/copy cost, end-to-end
-throughput, section size, build/runtime dependency, and source-boundary metrics
-with raw samples and an environment manifest.
+M9 archives 15 raw samples per language/benchmark, compiler wall times, object
+sections and undefined symbols, stack-size metadata where available,
+source/unsafe/FFI counts, and QEMU integration rates.  The clean-source bundle
+is pinned to Linux ``2c91e00c1eae`` and Modern-C ``ac03c949``.  In the x86_64
+Docker container emulated on an Apple M3 Max, median 64-byte control-cycle times
+were 16.093 ns for C, 21.122 ns for Rust, and 29.286 ns for MC.  These are
+environment-specific engineering observations, not bare-metal rankings.
+Object sizes were 12,792, 5,320, and 13,568 bytes; maximum reported stack was
+56 bytes for C and 72 bytes for MC, while Rust emitted no readable stack-size
+metadata.  TCG completion latency and hardware performance counters are
+reported as unavailable.  The compressed evidence SHA-256 is
+``74f889dba7fc2588e068c608d883e4dfd92924786e787afe0f94b92c89436ffe``.
+
+M0-M9 are complete at the documented boundaries.  This is evidence for the
+logical core and its validated publication firewall, not a claim that language
+types own Linux's DMA allocation or replace the trusted virtqueue/common-C
+boundary.
 
 MC contract fixtures
 ====================
