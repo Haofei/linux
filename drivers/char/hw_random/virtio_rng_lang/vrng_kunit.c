@@ -505,7 +505,13 @@ static void vrng_shadow_control_validation_test(struct kunit *test)
 							   &spec_state));
 
 	KUNIT_ASSERT_EQ(test, vrng_shadow_init(&shadow, 8), 0);
+#if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_CONTROL_RUST)
+	shadow.rust_state.capacity = 7;
+#elif IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_CONTROL_MC)
+	shadow.mc_state.capacity = 7;
+#else
 	shadow.c_state.capacity = 7;
+#endif
 	KUNIT_EXPECT_EQ(test, vrng_shadow_begin_submit(&shadow, &generation),
 			-EPROTO);
 	KUNIT_EXPECT_EQ(test, generation, 0ULL);
@@ -805,6 +811,33 @@ static void vrng_shadow_cookie_generation_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, mismatches, 0ULL);
 }
 
+static void vrng_shadow_selected_control_test(struct kunit *test)
+{
+	struct vrng_shadow_mismatch last;
+	struct vrng_shadow shadow;
+	u64 events, generation, mismatches;
+
+	KUNIT_ASSERT_EQ(test, vrng_shadow_init(&shadow, 8), 0);
+	KUNIT_EXPECT_EQ(test, vrng_shadow_current_epoch(&shadow),
+			shadow.spec_state.epoch);
+#if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_CONTROL_RUST)
+	KUNIT_EXPECT_STREQ(test, vrng_shadow_control_name(), "Rust");
+	shadow.rust_state.capacity = 0;
+#elif IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_CONTROL_MC)
+	KUNIT_EXPECT_STREQ(test, vrng_shadow_control_name(), "MC");
+	shadow.mc_state.capacity = 0;
+#else
+	KUNIT_EXPECT_STREQ(test, vrng_shadow_control_name(), "C");
+	shadow.c_state.capacity = 0;
+#endif
+	KUNIT_EXPECT_EQ(test,
+			vrng_shadow_begin_submit(&shadow, &generation), -EPROTO);
+	vrng_shadow_snapshot(&shadow, &events, &mismatches, &last);
+	KUNIT_EXPECT_EQ(test, events, 2ULL);
+	KUNIT_EXPECT_EQ(test, mismatches, 1ULL);
+	KUNIT_EXPECT_EQ(test, last.event, (u32)VRNG_SHADOW_BEGIN_SUBMIT);
+}
+
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_RUST) || \
 	IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_MC)
 static void vrng_shadow_mismatch_record_test(struct kunit *test)
@@ -859,6 +892,7 @@ static struct kunit_case vrng_core_test_cases[] = {
 	KUNIT_CASE(vrng_shadow_normal_sequence_test),
 	KUNIT_CASE(vrng_shadow_abort_sequence_test),
 	KUNIT_CASE(vrng_shadow_cookie_generation_test),
+	KUNIT_CASE(vrng_shadow_selected_control_test),
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_RUST) || \
 	IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_MC)
 	KUNIT_CASE(vrng_shadow_mismatch_record_test),

@@ -278,10 +278,9 @@ config HW_RANDOM_VIRTIO_LANG_RUST
 	default y
 	help
 	  Build the Rust implementation of the experimental logical buffer
-	  protocol.  Differential KUnit and optional live shadow mode call it,
-	  but it does not control the production virtio-rng driver.
-	  The option exists for language-comparison experiments and is not a
-	  replacement for the production driver.
+	  protocol.  Differential KUnit and live comparison mode call it.  The
+	  controller choice below may select it for logical protocol decisions;
+	  common C glue continues to own the virtqueue and DMA buffer.
 
 config HW_RANDOM_VIRTIO_LANG_MC
 	bool "MC core for the virtio-rng language experiment"
@@ -290,8 +289,9 @@ config HW_RANDOM_VIRTIO_LANG_MC
 	  Build the MC implementation of the experimental logical buffer
 	  protocol through the MC LLVM backend.  Set MCC to the MC compiler
 	  executable when building.  This option is experimental and off by
-	  default because MC is not part of the Linux toolchain.  It does not
-	  control the production virtio-rng driver.
+	  default because MC is not part of the Linux toolchain.  The controller
+	  choice below may select it for logical protocol decisions; common C glue
+	  continues to own the virtqueue and DMA buffer.
 
 config HW_RANDOM_VIRTIO_LANG_SHADOW
 	bool "Shadow the virtio-rng protocol in C, Rust, and MC"
@@ -299,14 +299,37 @@ config HW_RANDOM_VIRTIO_LANG_SHADOW
 	select HW_RANDOM_VIRTIO_LANG_CORE
 	help
 	  Mirror live virtio-rng submit, completion, copy, and removal events into
-	  the experimental language cores.  The experimental C core controls the
+	  the experimental language cores.  The selected language core controls the
 	  logical completion, copy, and resubmission decisions while common C glue
-	  remains the sole owner of the virtqueue and DMA buffer.  Rust and MC remain
-	  shadows.  Mismatches are retained in a bounded preallocated record and
-	  reported during device removal.
+	  remains the sole owner of the virtqueue and DMA buffer.  Other enabled
+	  cores remain shadows.  Mismatches are retained in a bounded preallocated
+	  record and reported during device removal.
 
 	  Enable the Rust and MC core options above to include those candidates.
 	  If unsure, say N.
+
+choice
+	prompt "Controlling virtio-rng language core"
+	depends on HW_RANDOM_VIRTIO_LANG_SHADOW
+	default HW_RANDOM_VIRTIO_LANG_CONTROL_C
+	help
+	  Select which implementation supplies live logical protocol decisions.
+	  Every selected transition is checked against the executable specification
+	  before it can affect the device; other enabled implementations continue as
+	  differential shadows.
+
+config HW_RANDOM_VIRTIO_LANG_CONTROL_C
+	bool "C"
+
+config HW_RANDOM_VIRTIO_LANG_CONTROL_RUST
+	bool "Rust"
+	depends on HW_RANDOM_VIRTIO_LANG_RUST
+
+config HW_RANDOM_VIRTIO_LANG_CONTROL_MC
+	bool "MC"
+	depends on HW_RANDOM_VIRTIO_LANG_MC
+
+endchoice
 
 config HW_RANDOM_MXC_RNGA
 	tristate "Freescale i.MX RNGA Random Number Generator"

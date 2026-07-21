@@ -7,6 +7,90 @@
 
 static atomic64_t vrng_shadow_epoch = ATOMIC64_INIT(0);
 
+static struct vrng_core_state *vrng_shadow_control_state(struct vrng_shadow *shadow)
+{
+#if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_CONTROL_RUST)
+	return &shadow->rust_state;
+#elif IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_CONTROL_MC)
+	return &shadow->mc_state;
+#else
+	return &shadow->c_state;
+#endif
+}
+
+static int vrng_shadow_control_result(int c_result, int rust_result,
+				      int mc_result)
+{
+#if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_CONTROL_RUST)
+	return rust_result;
+#elif IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_CONTROL_MC)
+	return mc_result;
+#else
+	return c_result;
+#endif
+}
+
+static u32 vrng_shadow_control_output(u32 c_output, u32 rust_output,
+				      u32 mc_output)
+{
+#if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_CONTROL_RUST)
+	return rust_output;
+#elif IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_CONTROL_MC)
+	return mc_output;
+#else
+	return c_output;
+#endif
+}
+
+static u64 vrng_shadow_control_generation(u64 c_generation,
+					  u64 rust_generation,
+					  u64 mc_generation)
+{
+#if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_CONTROL_RUST)
+	return rust_generation;
+#elif IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_CONTROL_MC)
+	return mc_generation;
+#else
+	return c_generation;
+#endif
+}
+
+static u8 *vrng_shadow_control_buffer(u8 *c_buffer, u8 *rust_buffer,
+				      u8 *mc_buffer)
+{
+#if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_CONTROL_RUST)
+	return rust_buffer;
+#elif IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_CONTROL_MC)
+	return mc_buffer;
+#else
+	return c_buffer;
+#endif
+}
+
+const char *vrng_shadow_control_name(void)
+{
+#if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_CONTROL_RUST)
+	return "Rust";
+#elif IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_CONTROL_MC)
+	return "MC";
+#else
+	return "C";
+#endif
+}
+
+u64 vrng_shadow_current_epoch(struct vrng_shadow *shadow)
+{
+	struct vrng_core_state *state;
+	unsigned long flags;
+	u64 epoch;
+
+	spin_lock_irqsave(&shadow->lock, flags);
+	state = vrng_shadow_control_state(shadow);
+	epoch = state->epoch;
+	spin_unlock_irqrestore(&shadow->lock, flags);
+	return epoch;
+}
+
 bool vrng_shadow_control_valid(int result, int spec_result, u32 output,
 			       u32 spec_output,
 			       const struct vrng_core_state *state,
@@ -79,6 +163,8 @@ int vrng_shadow_init(struct vrng_shadow *shadow, u32 capacity)
 	};
 	struct vrng_spec_outcome outcome;
 	int c_result, rust_result, mc_result, spec_result;
+	int control_result = -ENODEV;
+	struct vrng_core_state *control_state;
 	bool control_valid;
 
 	memset(shadow, 0, sizeof(*shadow));
@@ -101,15 +187,18 @@ int vrng_shadow_init(struct vrng_shadow *shadow, u32 capacity)
 	mc_result = c_result;
 	shadow->mc_state = shadow->c_state;
 #endif
-	control_valid = vrng_shadow_control_valid(c_result, spec_result, 0, 0,
-						  &shadow->c_state,
+	control_result = vrng_shadow_control_result(c_result, rust_result,
+						    mc_result);
+	control_state = vrng_shadow_control_state(shadow);
+	control_valid = vrng_shadow_control_valid(control_result, spec_result,
+						  0, 0, control_state,
 						  &shadow->spec_state);
 	shadow->generation = epoch;
-	shadow->active = control_valid && !c_result;
+	shadow->active = control_valid && !control_result;
 	vrng_shadow_record(shadow, VRNG_SHADOW_INIT, c_result, rust_result,
 			   mc_result, spec_result, 0, 0, 0, 0, false,
 			   !control_valid);
-	return control_valid ? c_result : -EPROTO;
+	return control_valid ? control_result : -EPROTO;
 }
 
 int vrng_shadow_begin_submit(struct vrng_shadow *shadow, u64 *generation)
@@ -119,6 +208,8 @@ int vrng_shadow_begin_submit(struct vrng_shadow *shadow, u64 *generation)
 	unsigned long flags;
 	u64 c_generation = 0, rust_generation = 0, mc_generation = 0;
 	int c_result, rust_result, mc_result, spec_result;
+	int control_result = -ENODEV;
+	u64 control_generation;
 	bool control_valid;
 
 	if (generation)
@@ -148,16 +239,21 @@ int vrng_shadow_begin_submit(struct vrng_shadow *shadow, u64 *generation)
 	mc_generation = c_generation;
 	shadow->mc_state = shadow->c_state;
 #endif
-	control_valid = vrng_shadow_control_valid(c_result, spec_result,
-						  (u32)c_generation,
+	control_result = vrng_shadow_control_result(c_result, rust_result,
+						    mc_result);
+	control_generation =
+		vrng_shadow_control_generation(c_generation, rust_generation,
+					       mc_generation);
+	control_valid = vrng_shadow_control_valid(control_result, spec_result,
+						  (u32)control_generation,
 						  (u32)outcome.generation,
-						  &shadow->c_state,
+						  vrng_shadow_control_state(shadow),
 						  &shadow->spec_state) &&
-			c_generation == outcome.generation;
-	if (control_valid && !c_result)
-		shadow->generation = c_generation;
+			control_generation == outcome.generation;
+	if (control_valid && !control_result)
+		shadow->generation = control_generation;
 	if (control_valid && generation)
-		*generation = c_generation;
+		*generation = control_generation;
 	vrng_shadow_record(shadow, VRNG_SHADOW_BEGIN_SUBMIT, c_result,
 			   rust_result, mc_result, spec_result,
 			   (u32)c_generation, (u32)rust_generation,
@@ -166,10 +262,10 @@ int vrng_shadow_begin_submit(struct vrng_shadow *shadow, u64 *generation)
 				   c_generation != mc_generation,
 			   !control_valid);
 	if (!control_valid)
-		c_result = -EPROTO;
+		control_result = -EPROTO;
 unlock:
 	spin_unlock_irqrestore(&shadow->lock, flags);
-	return c_result;
+	return control_result;
 }
 
 int vrng_shadow_abort_submit(struct vrng_shadow *shadow, u64 generation)
@@ -181,6 +277,7 @@ int vrng_shadow_abort_submit(struct vrng_shadow *shadow, u64 generation)
 	struct vrng_spec_outcome outcome;
 	unsigned long flags;
 	int c_result, rust_result, mc_result, spec_result;
+	int control_result = -ENODEV;
 	bool control_valid;
 
 	spin_lock_irqsave(&shadow->lock, flags);
@@ -204,17 +301,20 @@ int vrng_shadow_abort_submit(struct vrng_shadow *shadow, u64 generation)
 	mc_result = c_result;
 	shadow->mc_state = shadow->c_state;
 #endif
-	control_valid = vrng_shadow_control_valid(c_result, spec_result, 0, 0,
-						  &shadow->c_state,
+	control_result = vrng_shadow_control_result(c_result, rust_result,
+						    mc_result);
+	control_valid = vrng_shadow_control_valid(control_result, spec_result,
+						  0, 0,
+						  vrng_shadow_control_state(shadow),
 						  &shadow->spec_state);
 	vrng_shadow_record(shadow, VRNG_SHADOW_ABORT_SUBMIT, c_result,
 			   rust_result, mc_result, spec_result, 0, 0, 0, 0,
 			   false, !control_valid);
 	if (!control_valid)
-		c_result = -EPROTO;
+		control_result = -EPROTO;
 unlock:
 	spin_unlock_irqrestore(&shadow->lock, flags);
-	return c_result;
+	return control_result;
 }
 
 int vrng_shadow_recover_consumed(struct vrng_shadow *shadow)
@@ -223,6 +323,7 @@ int vrng_shadow_recover_consumed(struct vrng_shadow *shadow)
 	struct vrng_spec_outcome outcome;
 	unsigned long flags;
 	int c_result, rust_result, mc_result, spec_result;
+	int control_result = -ENODEV;
 	u64 generation;
 	bool control_valid;
 
@@ -249,17 +350,20 @@ int vrng_shadow_recover_consumed(struct vrng_shadow *shadow)
 	mc_result = c_result;
 	shadow->mc_state = shadow->c_state;
 #endif
-	control_valid = vrng_shadow_control_valid(c_result, spec_result, 0, 0,
-						  &shadow->c_state,
+	control_result = vrng_shadow_control_result(c_result, rust_result,
+						    mc_result);
+	control_valid = vrng_shadow_control_valid(control_result, spec_result,
+						  0, 0,
+						  vrng_shadow_control_state(shadow),
 						  &shadow->spec_state);
 	vrng_shadow_record(shadow, VRNG_SHADOW_ABORT_SUBMIT, c_result,
 			   rust_result, mc_result, spec_result, 0, 0, 0, 0,
 			   false, !control_valid);
 	if (!control_valid)
-		c_result = -EPROTO;
+		control_result = -EPROTO;
 unlock:
 	spin_unlock_irqrestore(&shadow->lock, flags);
-	return c_result;
+	return control_result;
 }
 
 int vrng_shadow_complete(struct vrng_shadow *shadow, u64 generation,
@@ -274,6 +378,8 @@ int vrng_shadow_complete(struct vrng_shadow *shadow, u64 generation,
 	unsigned long flags;
 	u32 c_resubmit = 0, rust_resubmit = 0, mc_resubmit = 0;
 	int c_result, rust_result, mc_result, spec_result;
+	int control_result = -ENODEV;
+	u32 control_resubmit;
 	bool control_valid;
 
 	if (need_resubmit)
@@ -304,24 +410,28 @@ int vrng_shadow_complete(struct vrng_shadow *shadow, u64 generation,
 	mc_resubmit = c_resubmit;
 	shadow->mc_state = shadow->c_state;
 #endif
-	control_valid = vrng_shadow_control_valid(c_result, spec_result,
-						  c_resubmit,
+	control_result = vrng_shadow_control_result(c_result, rust_result,
+						    mc_result);
+	control_resubmit = vrng_shadow_control_output(c_resubmit, rust_resubmit,
+						      mc_resubmit);
+	control_valid = vrng_shadow_control_valid(control_result, spec_result,
+						  control_resubmit,
 						  outcome.need_resubmit,
-						  &shadow->c_state,
+						  vrng_shadow_control_state(shadow),
 						  &shadow->spec_state);
 	vrng_shadow_record(shadow, VRNG_SHADOW_COMPLETE, c_result, rust_result,
 			   mc_result, spec_result, c_resubmit, rust_resubmit,
 			   mc_resubmit, outcome.need_resubmit, false,
 			   !control_valid);
 	if (!control_valid) {
-		c_result = -EPROTO;
+		control_result = -EPROTO;
 		goto unlock;
 	}
 	if (need_resubmit)
-		*need_resubmit = c_resubmit;
+		*need_resubmit = control_resubmit;
 unlock:
 	spin_unlock_irqrestore(&shadow->lock, flags);
-	return c_result;
+	return control_result;
 }
 
 bool vrng_shadow_copy_output_valid(int result, u32 requested, u32 available,
@@ -357,9 +467,11 @@ int vrng_shadow_copy(struct vrng_shadow *shadow, const u8 *dma_buffer,
 	unsigned long flags;
 	u32 c_copied = 0, rust_copied = 0, mc_copied = 0;
 	u32 c_resubmit = 0, rust_resubmit = 0, mc_resubmit = 0;
-	u32 pre_available;
+	u32 pre_available, control_copied, control_resubmit;
 	int c_result, rust_result, mc_result, spec_result;
-	bool bytes_differ = false, c_output_valid, control_valid;
+	int control_result = -ENODEV;
+	u8 *control_buffer;
+	bool bytes_differ = false, control_output_valid, control_valid;
 
 	if (copied)
 		*copied = 0;
@@ -371,7 +483,7 @@ int vrng_shadow_copy(struct vrng_shadow *shadow, const u8 *dma_buffer,
 		c_result = -ENODEV;
 		goto unlock;
 	}
-	pre_available = shadow->c_state.data_avail;
+	pre_available = vrng_shadow_control_state(shadow)->data_avail;
 	memset(c_buffer, 0xa5, sizeof(c_buffer));
 	memset(rust_buffer, 0xa5, sizeof(rust_buffer));
 	memset(mc_buffer, 0xa5, sizeof(mc_buffer));
@@ -428,33 +540,42 @@ int vrng_shadow_copy(struct vrng_shadow *shadow, const u8 *dma_buffer,
 			   sizeof(mc_buffer) -
 				   min_t(u32, mc_copied, sizeof(mc_buffer)));
 #endif
-	c_output_valid = vrng_shadow_copy_output_valid(c_result, requested,
-						       pre_available, c_copied,
-						       c_resubmit);
-	control_valid = c_output_valid &&
-			vrng_shadow_control_valid(c_result, spec_result,
-						  c_copied, outcome.copied,
-						  &shadow->c_state,
+	control_result = vrng_shadow_control_result(c_result, rust_result,
+						    mc_result);
+	control_copied = vrng_shadow_control_output(c_copied, rust_copied,
+						    mc_copied);
+	control_resubmit = vrng_shadow_control_output(c_resubmit, rust_resubmit,
+						      mc_resubmit);
+	control_buffer = vrng_shadow_control_buffer(c_buffer, rust_buffer,
+						    mc_buffer);
+	control_output_valid =
+		vrng_shadow_copy_output_valid(control_result, requested,
+					      pre_available, control_copied,
+					      control_resubmit);
+	control_valid = control_output_valid &&
+			vrng_shadow_control_valid(control_result, spec_result,
+						  control_copied, outcome.copied,
+						  vrng_shadow_control_state(shadow),
 						  &shadow->spec_state) &&
-			c_resubmit == outcome.need_resubmit &&
-			!memcmp(c_buffer, spec_buffer, sizeof(c_buffer));
+			control_resubmit == outcome.need_resubmit &&
+			!memcmp(control_buffer, spec_buffer, sizeof(spec_buffer));
 	vrng_shadow_record(shadow, VRNG_SHADOW_COPY, c_result, rust_result,
 			   mc_result, spec_result, c_copied, rust_copied,
 			   mc_copied, outcome.copied, bytes_differ,
 			   !control_valid);
 	if (!control_valid) {
-		c_result = -EPROTO;
+		control_result = -EPROTO;
 		goto unlock;
 	}
-	if (!c_result && c_copied)
-		memcpy(destination, c_buffer, c_copied);
+	if (!control_result && control_copied)
+		memcpy(destination, control_buffer, control_copied);
 	if (copied)
-		*copied = c_copied;
+		*copied = control_copied;
 	if (need_resubmit)
-		*need_resubmit = c_resubmit;
+		*need_resubmit = control_resubmit;
 unlock:
 	spin_unlock_irqrestore(&shadow->lock, flags);
-	return c_result;
+	return control_result;
 }
 
 int vrng_shadow_begin_remove(struct vrng_shadow *shadow)
@@ -463,6 +584,7 @@ int vrng_shadow_begin_remove(struct vrng_shadow *shadow)
 	struct vrng_spec_outcome outcome;
 	unsigned long flags;
 	int c_result, rust_result, mc_result, spec_result;
+	int control_result = -ENODEV;
 	bool control_valid;
 
 	spin_lock_irqsave(&shadow->lock, flags);
@@ -485,17 +607,20 @@ int vrng_shadow_begin_remove(struct vrng_shadow *shadow)
 	mc_result = c_result;
 	shadow->mc_state = shadow->c_state;
 #endif
-	control_valid = vrng_shadow_control_valid(c_result, spec_result, 0, 0,
-						  &shadow->c_state,
+	control_result = vrng_shadow_control_result(c_result, rust_result,
+						    mc_result);
+	control_valid = vrng_shadow_control_valid(control_result, spec_result,
+						  0, 0,
+						  vrng_shadow_control_state(shadow),
 						  &shadow->spec_state);
 	vrng_shadow_record(shadow, VRNG_SHADOW_BEGIN_REMOVE, c_result,
 			   rust_result, mc_result, spec_result, 0, 0, 0, 0,
 			   false, !control_valid);
 	if (!control_valid)
-		c_result = -EPROTO;
+		control_result = -EPROTO;
 unlock:
 	spin_unlock_irqrestore(&shadow->lock, flags);
-	return c_result;
+	return control_result;
 }
 
 int vrng_shadow_finish_remove(struct vrng_shadow *shadow)
@@ -504,6 +629,7 @@ int vrng_shadow_finish_remove(struct vrng_shadow *shadow)
 	struct vrng_spec_outcome outcome;
 	unsigned long flags;
 	int c_result, rust_result, mc_result, spec_result;
+	int control_result = -ENODEV;
 	bool control_valid;
 
 	spin_lock_irqsave(&shadow->lock, flags);
@@ -526,18 +652,21 @@ int vrng_shadow_finish_remove(struct vrng_shadow *shadow)
 	mc_result = c_result;
 	shadow->mc_state = shadow->c_state;
 #endif
-	control_valid = vrng_shadow_control_valid(c_result, spec_result, 0, 0,
-						  &shadow->c_state,
+	control_result = vrng_shadow_control_result(c_result, rust_result,
+						    mc_result);
+	control_valid = vrng_shadow_control_valid(control_result, spec_result,
+						  0, 0,
+						  vrng_shadow_control_state(shadow),
 						  &shadow->spec_state);
 	vrng_shadow_record(shadow, VRNG_SHADOW_FINISH_REMOVE, c_result,
 			   rust_result, mc_result, spec_result, 0, 0, 0, 0,
 			   false, !control_valid);
 	shadow->active = false;
 	if (!control_valid)
-		c_result = -EPROTO;
+		control_result = -EPROTO;
 unlock:
 	spin_unlock_irqrestore(&shadow->lock, flags);
-	return c_result;
+	return control_result;
 }
 
 void vrng_shadow_snapshot(struct vrng_shadow *shadow, u64 *events,

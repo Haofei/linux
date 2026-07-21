@@ -221,7 +221,7 @@ static int request_entropy_locked(struct virtrng_info *vi)
 		return err;
 	}
 	vi->cookie.vi = vi;
-	vi->cookie.epoch = vi->shadow.c_state.epoch;
+	vi->cookie.epoch = vrng_shadow_current_epoch(&vi->shadow);
 	vi->cookie.generation = generation;
 	vi->cookie.request_id = ++vi->next_request_id;
 	token = &vi->cookie;
@@ -471,14 +471,15 @@ static void remove_common(struct virtio_device *vdev)
 	vrng_shadow_snapshot(&vi->shadow, &events, &mismatches, &last);
 	if (mismatches)
 		dev_warn(&vdev->dev,
-			 "language shadow mismatches=%llu events=%llu last_event=%u last_sequence=%llu C=%d Rust=%d MC=%d spec=%d\n",
+			 "language shadow control=%s mismatches=%llu events=%llu last_event=%u last_sequence=%llu C=%d Rust=%d MC=%d spec=%d\n",
+			 vrng_shadow_control_name(),
 			 mismatches, events, last.event, last.sequence,
 			 last.c_result, last.rust_result, last.mc_result,
 			 last.spec_result);
 	else
 		dev_info(&vdev->dev,
-			 "language shadow matched all %llu protocol events\n",
-			 events);
+			 "language shadow control=%s matched all %llu protocol events\n",
+			 vrng_shadow_control_name(), events);
 #endif
 	ida_free(&rng_index_ida, vi->index);
 	vdev->priv = NULL;

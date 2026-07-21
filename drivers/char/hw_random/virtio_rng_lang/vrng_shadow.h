@@ -50,6 +50,9 @@ struct vrng_shadow {
 	bool active;
 };
 
+const char *vrng_shadow_control_name(void);
+u64 vrng_shadow_current_epoch(struct vrng_shadow *shadow);
+
 int vrng_shadow_init(struct vrng_shadow *shadow, u32 capacity);
 int vrng_shadow_begin_submit(struct vrng_shadow *shadow, u64 *generation);
 int vrng_shadow_abort_submit(struct vrng_shadow *shadow, u64 generation);
