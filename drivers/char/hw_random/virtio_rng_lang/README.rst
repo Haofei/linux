@@ -210,9 +210,17 @@ for arm64 and riscv64.
 Next experiment gates
 =====================
 
-1. Preserve the completed M4 controller matrix in reproducible result manifests.
-2. Begin M5 from the unchanged common-lock baseline and add LKMM tests before
-   changing any publication or wakeup ordering.
+M5 retains the common-lock baseline.  Herdtools7 7.58 proves that the
+release/acquire publication and completion-lock wakeup models prohibit a reader
+from observing readiness without the preceding data write.  A plain-access
+negative control permits the bad outcome, so the formal gate is non-vacuous.
+Live KCSAN and combined KASAN/UBSAN/lockdep/DMA-debug runs cover Rust and MC
+control in addition to the previously qualified C baseline.  These tests model
+CPU publication and wakeup ordering; virtio DMA synchronization remains in the
+transport and common C boundary.
+
+The next gate is M6: exercise a genuine typed DMA ownership variant and record
+the exact external-alias boundary that the language cannot prove.
 
 MC contract fixtures
 ====================

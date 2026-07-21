@@ -2,6 +2,20 @@
 LITMUS TESTS
 ============
 
+VRNG+completion-wakeup-lock.litmus
+	Models the completion waitqueue lock boundary used by the experimental
+	virtio-rng live path.  A consumed wakeup must make the producer's prior
+	state publication visible.
+
+VRNG+data-publish-release-acquire.litmus
+	Models the virtio-rng callback's release publication of data_avail and
+	the reader's acquire observation.  A reader that sees available data
+	must also see the bytes published before it.
+
+VRNG+data-publish-once.litmus
+	Negative control showing that plain marked accesses permit availability
+	to become visible before the corresponding bytes.
+
 CoRR+poonceonce+Once.litmus
 	Test of read-read coherence, that is, whether or not two
 	successive reads from the same variable are ordered.

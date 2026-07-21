@@ -1,0 +1,28 @@
+C VRNG+data-publish-release-acquire
+
+(*
+ * Result: Never
+ *
+ * The virtio-rng completion callback publishes DMA data before data_avail.
+ * A reader that observes nonzero data_avail through an acquire load must not
+ * subsequently observe the old buffer contents.
+ *)
+
+{}
+
+P0(int *data, int *data_avail)
+{
+	WRITE_ONCE(*data, 1);
+	smp_store_release(data_avail, 1);
+}
+
+P1(int *data, int *data_avail)
+{
+	int r0;
+	int r1;
+
+	r0 = smp_load_acquire(data_avail);
+	r1 = READ_ONCE(*data);
+}
+
+exists (1:r0=1 /\ 1:r1=0)

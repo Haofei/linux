@@ -1,0 +1,28 @@
+C VRNG+data-publish-once
+
+(*
+ * Result: Sometimes
+ *
+ * Negative control for the virtio-rng publication contract. Replacing the
+ * callback's release and the reader's acquire with plain marked accesses
+ * permits the reader to observe availability without the published bytes.
+ *)
+
+{}
+
+P0(int *data, int *data_avail)
+{
+	WRITE_ONCE(*data, 1);
+	WRITE_ONCE(*data_avail, 1);
+}
+
+P1(int *data, int *data_avail)
+{
+	int r0;
+	int r1;
+
+	r0 = READ_ONCE(*data_avail);
+	r1 = READ_ONCE(*data);
+}
+
+exists (1:r0=1 /\ 1:r1=0)

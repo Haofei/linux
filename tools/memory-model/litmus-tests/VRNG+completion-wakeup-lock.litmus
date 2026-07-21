@@ -1,0 +1,32 @@
+C VRNG+completion-wakeup-lock
+
+(*
+ * Result: Never
+ *
+ * complete() and wait_for_completion() order accesses through the completion
+ * waitqueue lock. Model that lock boundary directly: a waiter that consumes a
+ * published wakeup must not observe state predating the producer's wakeup.
+ *)
+
+{}
+
+P0(int *state, int *wakeup, spinlock_t *completion_lock)
+{
+	WRITE_ONCE(*state, 1);
+	spin_lock(completion_lock);
+	WRITE_ONCE(*wakeup, 1);
+	spin_unlock(completion_lock);
+}
+
+P1(int *state, int *wakeup, spinlock_t *completion_lock)
+{
+	int r0;
+	int r1;
+
+	spin_lock(completion_lock);
+	r0 = READ_ONCE(*wakeup);
+	spin_unlock(completion_lock);
+	r1 = READ_ONCE(*state);
+}
+
+exists (1:r0=1 /\ 1:r1=0)
