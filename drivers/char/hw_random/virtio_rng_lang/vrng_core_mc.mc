@@ -54,52 +54,57 @@ open enum DecodedState: u32 {
 extern "C" fn vrng_core_index_nospec(index: u32, size: u32) -> u32;
 
 #[irq_context]
-fn decode_code(state: *const VrngCoreState) -> u32 {
-    if state.abi_version != ABI_VERSION || state.lifecycle > DEAD || state.phase > READY {
-        return STATE_INVALID;
-    }
-    if state.capacity == 0 || state.data_idx > state.capacity {
-        return STATE_INVALID;
-    }
-    var remaining: u32 = 0;
-    #[unsafe_contract(no_overflow)]
-    {
-        remaining = unchecked.sub(state.capacity, state.data_idx);
-    }
-    if state.data_avail > remaining {
-        return STATE_INVALID;
-    }
+#[no_lang_trap]
+fn decode_code(maybe_state: ?*const VrngCoreState) -> u32 {
+    if let state = maybe_state {
+        if state.abi_version != ABI_VERSION || state.lifecycle > DEAD || state.phase > READY {
+            return STATE_INVALID;
+        }
+        if state.capacity == 0 || state.data_idx > state.capacity {
+            return STATE_INVALID;
+        }
+        var remaining: u32 = 0;
+        #[unsafe_contract(no_overflow)]
+        {
+            remaining = unchecked.sub(state.capacity, state.data_idx);
+        }
+        if state.data_avail > remaining {
+            return STATE_INVALID;
+        }
 
-    if state.lifecycle == ACTIVE {
+        if state.lifecycle == ACTIVE {
+            if state.phase == EMPTY && state.data_idx == 0 && state.data_avail == 0 {
+                return STATE_ACTIVE_EMPTY;
+            }
+            if state.phase == DEVICE_OWNED && state.data_idx == 0 && state.data_avail == 0 {
+                return STATE_ACTIVE_DEVICE_OWNED;
+            }
+            if state.phase == READY && state.data_avail != 0 {
+                return STATE_ACTIVE_READY;
+            }
+            return STATE_INVALID;
+        }
+        if state.lifecycle == QUIESCING {
+            if state.phase == EMPTY && state.data_idx == 0 && state.data_avail == 0 {
+                return STATE_QUIESCING_EMPTY;
+            }
+            if state.phase == DEVICE_OWNED && state.data_idx == 0 && state.data_avail == 0 {
+                return STATE_QUIESCING_DEVICE_OWNED;
+            }
+            return STATE_INVALID;
+        }
         if state.phase == EMPTY && state.data_idx == 0 && state.data_avail == 0 {
-            return STATE_ACTIVE_EMPTY;
-        }
-        if state.phase == DEVICE_OWNED && state.data_idx == 0 && state.data_avail == 0 {
-            return STATE_ACTIVE_DEVICE_OWNED;
-        }
-        if state.phase == READY && state.data_avail != 0 {
-            return STATE_ACTIVE_READY;
+            return STATE_DEAD;
         }
         return STATE_INVALID;
-    }
-    if state.lifecycle == QUIESCING {
-        if state.phase == EMPTY && state.data_idx == 0 && state.data_avail == 0 {
-            return STATE_QUIESCING_EMPTY;
-        }
-        if state.phase == DEVICE_OWNED && state.data_idx == 0 && state.data_avail == 0 {
-            return STATE_QUIESCING_DEVICE_OWNED;
-        }
-        return STATE_INVALID;
-    }
-    if state.phase == EMPTY && state.data_idx == 0 && state.data_avail == 0 {
-        return STATE_DEAD;
     }
     return STATE_INVALID;
 }
 
 #[irq_context]
-fn decode(state: *const VrngCoreState) -> DecodedState {
-    switch decode_code(state) {
+#[no_lang_trap]
+fn decode(maybe_state: ?*const VrngCoreState) -> DecodedState {
+    switch decode_code(maybe_state) {
         0 => { return.ActiveEmpty; }
         1 => { return.ActiveDeviceOwned; }
         2 => { return.ActiveReady; }
@@ -111,10 +116,13 @@ fn decode(state: *const VrngCoreState) -> DecodedState {
 }
 
 #[irq_context]
-fn make_empty(state: *mut VrngCoreState) -> void {
-    state.phase = EMPTY;
-    state.data_idx = 0;
-    state.data_avail = 0;
+#[no_lang_trap]
+fn make_empty(maybe_state: ?*mut VrngCoreState) -> void {
+    if let state = maybe_state {
+        state.phase = EMPTY;
+        state.data_idx = 0;
+        state.data_avail = 0;
+    }
 }
 
 export fn vrng_core_mc_init(maybe_state: ?*mut VrngCoreState, capacity: u32, epoch: u64) -> i32 {
@@ -149,7 +157,7 @@ export fn vrng_core_mc_begin_submit(maybe_state: ?*mut VrngCoreState, maybe_gene
     if let generation = maybe_generation {
         generation.* = 0;
         if let state = maybe_state {
-            switch decode(state) {
+            switch decode(state as ?*const VrngCoreState) {
                 .Invalid => { return EINVAL; }
                 .ActiveEmpty => {}
                 .ActiveDeviceOwned,.ActiveReady => { return EBUSY; }
@@ -169,9 +177,10 @@ export fn vrng_core_mc_begin_submit(maybe_state: ?*mut VrngCoreState, maybe_gene
 }
 
 #[irq_context]
+#[no_lang_trap]
 export fn vrng_core_mc_abort_submit(maybe_state: ?*mut VrngCoreState, generation: u64) -> i32 {
     if let state = maybe_state {
-        let decoded: DecodedState = decode(state);
+        let decoded: DecodedState = decode(state as ?*const VrngCoreState);
         if decoded ==.Invalid { return EINVAL; }
         if decoded ==.Dead { return ENODEV; }
         if decoded ==.ActiveDeviceOwned || decoded ==.QuiescingDeviceOwned {
@@ -186,6 +195,7 @@ export fn vrng_core_mc_abort_submit(maybe_state: ?*mut VrngCoreState, generation
 }
 
 #[irq_context]
+#[no_lang_trap]
 export fn vrng_core_mc_complete(
     maybe_state: ?*mut VrngCoreState,
     generation: u64,
@@ -195,7 +205,7 @@ export fn vrng_core_mc_complete(
     if let need_resubmit = maybe_need_resubmit {
         need_resubmit.* = 0;
         if let state = maybe_state {
-            let decoded: u32 = decode_code(state);
+            let decoded: u32 = decode_code(state as ?*const VrngCoreState);
             if decoded == STATE_INVALID { return EINVAL; }
             if decoded == STATE_DEAD { return ENODEV; }
             if decoded != STATE_ACTIVE_DEVICE_OWNED && decoded != STATE_QUIESCING_DEVICE_OWNED {
@@ -239,7 +249,7 @@ export fn vrng_core_mc_copy(
     if let copied = maybe_copied {
         if let need_resubmit = maybe_need_resubmit {
             if let state = maybe_state {
-                let decoded: DecodedState = decode(state);
+                let decoded: DecodedState = decode(state as ?*const VrngCoreState);
                 if decoded ==.Invalid { return EINVAL; }
                 if let dma_buffer = maybe_dma_buffer {
                     if let destination = maybe_destination {
@@ -295,7 +305,7 @@ export fn vrng_core_mc_copy(
 
 export fn vrng_core_mc_begin_remove(maybe_state: ?*mut VrngCoreState) -> i32 {
     if let state = maybe_state {
-        let decoded: DecodedState = decode(state);
+        let decoded: DecodedState = decode(state as ?*const VrngCoreState);
         if decoded ==.Invalid { return EINVAL; }
         if decoded ==.ActiveEmpty || decoded ==.ActiveDeviceOwned {
             state.lifecycle = QUIESCING;
@@ -313,7 +323,7 @@ export fn vrng_core_mc_begin_remove(maybe_state: ?*mut VrngCoreState) -> i32 {
 
 export fn vrng_core_mc_finish_remove(maybe_state: ?*mut VrngCoreState) -> i32 {
     if let state = maybe_state {
-        let decoded: DecodedState = decode(state);
+        let decoded: DecodedState = decode(state as ?*const VrngCoreState);
         if decoded ==.Invalid { return EINVAL; }
         if decoded ==.Dead { return EALREADY; }
         if decoded ==.QuiescingEmpty || decoded ==.QuiescingDeviceOwned {

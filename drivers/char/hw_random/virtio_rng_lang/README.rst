@@ -165,17 +165,18 @@ after each cycle, and then passed synchronized unbind with zero mismatches; the
 same matrix also passes under KCSAN.  A QMP-controlled PCI hot-unplug terminated
 a reader blocked behind a held completion, removed the transport, re-added a
 fresh virtio-rng device, restored live reads, and then passed the final
-synchronized unbind with zero mismatches.  Host failure-corpus persistence and
-the MC representation-proof gap remain required before M4 can start.
+synchronized unbind with zero mismatches.  The host differential gate links the
+executable specification and all three actual implementations, explores 30
+unique states, replays committed corpora, and proves deterministic failure
+capture with an injected mismatch.
 
 Rust and MC remain shadows rather than selectable controlling cores.
-``#[irq_context]`` verifies the MC
-completion call graph, but ``#[no_lang_trap]`` cannot certify access to the
-C-layout state: current MC inserts ``InvalidRepresentation`` edges for even
-full-domain ``u32`` fields in an ``extern struct``.  The minimal expected-failure
-fixture is ``vrng_mc_no_trap_gap.mc``.  Optimized machine code contains no trap
-call, but that is weaker evidence than satisfying the source contract and
-remains a recorded language gap.  The Rust copy path calls the common C
+``#[irq_context]`` and ``#[no_lang_trap]`` now verify the MC completion call
+graph.  Nullable ABI pointers are explicitly narrowed before C-layout state
+access; the successful branch carries a scoped nonnull representation proof.
+``vrng_mc_no_trap_gap.mc`` is now a positive qualification fixture, while a
+direct unchecked nonnull parameter remains rejected by the compiler regression.
+The Rust copy path calls the common C
 boundary's scalar ``array_index_nospec`` wrapper because the kernel primitive
 is a C macro/static inline and has no Rust abstraction or bindgen symbol.
 
@@ -201,20 +202,18 @@ Remaining gates before candidate control
 ========================================
 
 1. Preserve the completed M3.5 normal, KCSAN, KASAN/UBSAN/lockdep, three-arch
-   KUnit, and live queue/completion-fault gates in reproducible result
-   manifests.
-2. Decide whether to fix MC's extern-struct representation proof so the IRQ
-   completion path can satisfy ``#[no_lang_trap]``; otherwise retain it as a
-   measured language limitation.
-3. Add host differential enumeration with failure-sequence persistence.
+   KUnit, live queue/completion-fault, PM, and QMP hotplug gates in reproducible
+   result manifests.
+2. Add the selectable C/Rust/MC controlling-core choice and run the full fault
+   and lifecycle matrix independently for each implementation.
 
 MC contract fixtures
 ====================
 
-The following source files are intentionally rejected by ``mcc verify`` and
-pin the callback contract diagnostics independently of the candidate:
+The following source files pin the callback contract independently of the
+candidate:
 
 * ``vrng_mc_irq_blocking_gap.mc``: ``E_SLEEP_IN_ATOMIC``;
 * ``vrng_mc_irq_unbounded_gap.mc``: ``E_UNBOUNDED_LOOP``;
-* ``vrng_mc_no_trap_gap.mc``: ``E_NO_LANG_TRAP_EDGE`` (an observed language
-  limitation, not a desired rejection).
+* ``vrng_mc_no_trap_gap.mc``: accepted nullable-pointer narrowing and extern-
+  struct access under ``#[no_lang_trap]``.
