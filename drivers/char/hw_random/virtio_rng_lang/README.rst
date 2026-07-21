@@ -155,9 +155,13 @@ and copied bytes must match before the result can affect the live driver.
 The normal x86-64 live PCI tests passed a forced three-byte driver copy limit in
 both shadow-disabled and shadow builds.  The shadow run reached the held-
 completion synchronization point before unbind with 1,213 matching protocol
-events.  Completion/add fault matrices,
-sanitizer configurations, and arm64/riscv64 requalification remain required
-before M4 can start.
+events.  KCSAN and the combined KASAN/UBSAN/lockdep/DMA-debug live runs passed
+with 1,213 and 1,216 matching events, respectively.  The deterministic live
+fault matrix recovered from zero-length and oversized completions, a stale
+generation, and one queue-add failure with 1,243 matching events.  The full
+23-test KUnit suite also passes on x86-64, arm64, and riscv64.  Host failure-
+corpus persistence, suspend/restore, and transport-level hot-unplug remain
+required before M4 can start.
 
 Rust and MC remain shadows rather than selectable controlling cores.
 ``#[irq_context]`` verifies the MC
@@ -191,8 +195,9 @@ for arm64 and riscv64.
 Remaining gates before candidate control
 ========================================
 
-1. Requalify M3.5 under the normal, KCSAN, KASAN/UBSAN/lockdep, and three-arch
-   KUnit/QEMU matrix, including queue-add and completion fault injection.
+1. Preserve the completed M3.5 normal, KCSAN, KASAN/UBSAN/lockdep, three-arch
+   KUnit, and live queue/completion-fault gates in reproducible result
+   manifests.
 2. Decide whether to fix MC's extern-struct representation proof so the IRQ
    completion path can satisfy ``#[no_lang_trap]``; otherwise retain it as a
    measured language limitation.
