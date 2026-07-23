@@ -680,3 +680,13 @@ void vrng_shadow_snapshot(struct vrng_shadow *shadow, u64 *events,
 	*last = shadow->last_mismatch;
 	spin_unlock_irqrestore(&shadow->lock, flags);
 }
+
+void vrng_shadow_control_snapshot(struct vrng_shadow *shadow,
+				  struct vrng_core_state *state)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&shadow->lock, flags);
+	*state = *vrng_shadow_control_state(shadow);
+	spin_unlock_irqrestore(&shadow->lock, flags);
+}

@@ -13,6 +13,7 @@
 #include <linux/virtio.h>
 #include <linux/virtio_rng.h>
 #include <linux/dma-mapping.h>
+#include <linux/delay.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/slab.h>
@@ -36,12 +37,30 @@ static int vrng_lang_completion_override = -1;
 static int vrng_lang_stale_once;
 static int vrng_lang_hold_completion;
 static int vrng_lang_completion_held;
+static int vrng_lang_hold_publication;
+static int vrng_lang_publication_held;
+static int vrng_lang_fail_register_once;
+static int vrng_lang_remove_begun;
+static int vrng_lang_last_remove_data_avail = -1;
+static int vrng_lang_last_remove_lifecycle = -1;
+static int vrng_lang_last_remove_phase = -1;
 module_param_named(lang_fail_add_once, vrng_lang_fail_add_once, int, 0600);
 module_param_named(lang_completion_override, vrng_lang_completion_override,
 		   int, 0600);
 module_param_named(lang_stale_once, vrng_lang_stale_once, int, 0600);
 module_param_named(lang_hold_completion, vrng_lang_hold_completion, int, 0600);
 module_param_named(lang_completion_held, vrng_lang_completion_held, int, 0400);
+module_param_named(lang_hold_publication, vrng_lang_hold_publication, int, 0600);
+module_param_named(lang_publication_held, vrng_lang_publication_held, int, 0400);
+module_param_named(lang_fail_register_once, vrng_lang_fail_register_once, int,
+		   0600);
+module_param_named(lang_remove_begun, vrng_lang_remove_begun, int, 0400);
+module_param_named(lang_last_remove_data_avail,
+		   vrng_lang_last_remove_data_avail, int, 0400);
+module_param_named(lang_last_remove_lifecycle,
+		   vrng_lang_last_remove_lifecycle, int, 0400);
+module_param_named(lang_last_remove_phase, vrng_lang_last_remove_phase, int,
+		   0400);
 MODULE_PARM_DESC(lang_fail_add_once,
 		 "fail the next experimental virtqueue submission");
 MODULE_PARM_DESC(lang_completion_override,
@@ -52,6 +71,20 @@ MODULE_PARM_DESC(lang_hold_completion,
 		 "consume and hold the next experimental completion for removal tests");
 MODULE_PARM_DESC(lang_completion_held,
 		 "indicate that an experimental completion is currently held");
+MODULE_PARM_DESC(lang_hold_publication,
+		 "pause a completion after logical completion and before publication");
+MODULE_PARM_DESC(lang_publication_held,
+		 "indicate that an experimental completion publication is paused");
+MODULE_PARM_DESC(lang_fail_register_once,
+		 "fail the next experimental hwrng registration");
+MODULE_PARM_DESC(lang_remove_begun,
+		 "indicate that experimental logical removal has begun");
+MODULE_PARM_DESC(lang_last_remove_data_avail,
+		 "external availability recorded after the last callback drain");
+MODULE_PARM_DESC(lang_last_remove_lifecycle,
+		 "logical lifecycle recorded after the last removal");
+MODULE_PARM_DESC(lang_last_remove_phase,
+		 "logical phase recorded after the last removal");
 #endif
 
 struct virtrng_info;
@@ -92,10 +125,31 @@ struct virtrng_info {
 	__dma_from_device_group_end();
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
 	struct vrng_shadow shadow;
+	struct work_struct publication_work;
+	unsigned int publication_len;
+	bool shadow_initialized;
+	bool shadow_active;
 #endif
 };
 
 static int request_entropy_locked(struct virtrng_info *vi);
+static int remove_common(struct virtio_device *vdev);
+
+#if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
+static void publish_held_data(struct work_struct *work)
+{
+	struct virtrng_info *vi =
+		container_of(work, struct virtrng_info, publication_work);
+
+	WRITE_ONCE(vrng_lang_publication_held, 1);
+	while (READ_ONCE(vrng_lang_hold_publication))
+		usleep_range(1000, 2000);
+	/* Publish the completed DMA bytes before waking readers. */
+	smp_store_release(&vi->data_avail, READ_ONCE(vi->publication_len));
+	complete(&vi->have_data);
+	WRITE_ONCE(vrng_lang_publication_held, 0);
+}
+#endif
 
 static void publish_data_error(struct virtrng_info *vi, int error)
 {
@@ -185,6 +239,11 @@ static void random_recv_done(struct virtqueue *vq)
 			}
 		}
 		publish_data_error(vi, err);
+		return;
+	}
+	if (READ_ONCE(vrng_lang_hold_publication)) {
+		WRITE_ONCE(vi->publication_len, len);
+		schedule_work(&vi->publication_work);
 		return;
 	}
 #else
@@ -390,6 +449,9 @@ static int probe_common(struct virtio_device *vdev)
 	init_completion(&vi->have_data);
 	mutex_init(&vi->process_lock);
 	INIT_DELAYED_WORK(&vi->refill_work, refill_entropy);
+#if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
+	INIT_WORK(&vi->publication_work, publish_held_data);
+#endif
 
 	vi->hwrng = (struct hwrng) {
 		.read = virtio_read,
@@ -413,7 +475,14 @@ static int probe_common(struct virtio_device *vdev)
 	err = vrng_shadow_init(&vi->shadow, sizeof(vi->data));
 	if (err)
 		goto err_request;
+	vi->shadow_initialized = true;
+	vi->shadow_active = true;
 	WRITE_ONCE(vrng_lang_completion_held, 0);
+	WRITE_ONCE(vrng_lang_publication_held, 0);
+	WRITE_ONCE(vrng_lang_remove_begun, 0);
+	WRITE_ONCE(vrng_lang_last_remove_data_avail, -1);
+	WRITE_ONCE(vrng_lang_last_remove_lifecycle, -1);
+	WRITE_ONCE(vrng_lang_last_remove_phase, -1);
 #endif
 	mutex_lock(&vi->process_lock);
 	err = request_entropy_locked(vi);
@@ -424,8 +493,13 @@ static int probe_common(struct virtio_device *vdev)
 	return 0;
 
 err_request:
-	virtio_reset_device(vdev);
-	vdev->config->del_vqs(vdev);
+	{
+		int teardown_err = remove_common(vdev);
+
+		if (teardown_err)
+			return teardown_err;
+	}
+	return err;
 
 err_find:
 	vdev->priv = NULL;
@@ -435,55 +509,89 @@ err_ida:
 	return err;
 }
 
-static void remove_common(struct virtio_device *vdev)
+static int remove_common(struct virtio_device *vdev)
 {
 	struct virtrng_info *vi = vdev->priv;
 	bool unregister;
+	int first_err = 0;
 
 	if (!vi)
-		return;
+		return 0;
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
 	struct vrng_shadow_mismatch last;
+	struct vrng_core_state final_state;
 	u64 events, mismatches;
+	int err;
 
 	mutex_lock(&vi->process_lock);
-	vrng_shadow_begin_remove(&vi->shadow);
+	if (vi->shadow_active) {
+		err = vrng_shadow_begin_remove(&vi->shadow);
+		virtrng_record_first_error(&first_err, err);
+	}
 #else
 	mutex_lock(&vi->process_lock);
 #endif
 
 	vi->hwrng_removed = true;
+#if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
+	WRITE_ONCE(vrng_lang_remove_begun, 1);
+#endif
 	unregister = vi->hwrng_register_done;
 	vi->hwrng_register_done = false;
-	vi->data_avail = 0;
-	vi->data_idx = 0;
 	mutex_unlock(&vi->process_lock);
 	complete(&vi->have_data);
 	cancel_delayed_work_sync(&vi->refill_work);
 	if (unregister)
 		hwrng_unregister(&vi->hwrng);
 	virtio_reset_device(vdev);
-	vdev->config->del_vqs(vdev);
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
+	/* Reset prevents callbacks from scheduling a new publication worker. */
+	cancel_work_sync(&vi->publication_work);
+#endif
+	vdev->config->del_vqs(vdev);
+	/* No callback can republish data after the final externally visible clear. */
 	mutex_lock(&vi->process_lock);
-	vrng_shadow_finish_remove(&vi->shadow);
+	WRITE_ONCE(vi->data_avail, 0);
+	vi->data_idx = 0;
+#if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
+	if (vi->shadow_active) {
+		err = vrng_shadow_finish_remove(&vi->shadow);
+		virtrng_record_first_error(&first_err, err);
+		vi->shadow_active = false;
+		vrng_shadow_control_snapshot(&vi->shadow, &final_state);
+		WRITE_ONCE(vrng_lang_last_remove_lifecycle,
+			   final_state.lifecycle);
+		WRITE_ONCE(vrng_lang_last_remove_phase, final_state.phase);
+	}
+	WRITE_ONCE(vrng_lang_last_remove_data_avail,
+		   READ_ONCE(vi->data_avail));
+#endif
 	mutex_unlock(&vi->process_lock);
+#if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
+	if (!vi->shadow_initialized)
+		goto free_info;
 	vrng_shadow_snapshot(&vi->shadow, &events, &mismatches, &last);
 	if (mismatches)
 		dev_warn(&vdev->dev,
-			 "language shadow control=%s mismatches=%llu events=%llu last_event=%u last_sequence=%llu C=%d Rust=%d MC=%d spec=%d\n",
+			 "language shadow control=%s mismatches=%llu events=%llu teardown_error=%d last_event=%u last_sequence=%llu C=%d Rust=%d MC=%d spec=%d\n",
 			 vrng_shadow_control_name(),
-			 mismatches, events, last.event, last.sequence,
+			 mismatches, events, first_err, last.event, last.sequence,
 			 last.c_result, last.rust_result, last.mc_result,
 			 last.spec_result);
+	else if (first_err)
+		dev_warn(&vdev->dev,
+			 "language shadow control=%s teardown failed=%d after %llu matching protocol events\n",
+			 vrng_shadow_control_name(), first_err, events);
 	else
 		dev_info(&vdev->dev,
 			 "language shadow control=%s matched all %llu protocol events\n",
 			 vrng_shadow_control_name(), events);
+free_info:
 #endif
 	ida_free(&rng_index_ida, vi->index);
 	vdev->priv = NULL;
 	kfree(vi);
+	return first_err;
 }
 
 static int virtrng_probe(struct virtio_device *vdev)
@@ -496,25 +604,36 @@ static void virtrng_remove(struct virtio_device *vdev)
 	remove_common(vdev);
 }
 
+static int virtrng_hwrng_register(struct virtrng_info *vi)
+{
+#if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
+	if (xchg(&vrng_lang_fail_register_once, 0))
+		return -EIO;
+#endif
+	return hwrng_register(&vi->hwrng);
+}
+
 static void virtrng_scan(struct virtio_device *vdev)
 {
 	struct virtrng_info *vi = vdev->priv;
 	int err;
 
-	err = hwrng_register(&vi->hwrng);
+	err = virtrng_hwrng_register(vi);
 	if (!err) {
 		mutex_lock(&vi->process_lock);
 		vi->hwrng_register_done = true;
 		mutex_unlock(&vi->process_lock);
 	} else {
-		remove_common(vdev);
+		dev_err(&vdev->dev,
+			"hwrng registration failed: %d; device remains bound but unavailable\n",
+			err);
 	}
 }
 
 static int virtrng_freeze(struct virtio_device *vdev)
 {
-	remove_common(vdev);
-	return 0;
+	/* Always finish physical cleanup, but propagate logical verification failure. */
+	return remove_common(vdev);
 }
 
 static int virtrng_restore(struct virtio_device *vdev)
@@ -533,14 +652,17 @@ static int virtrng_restore(struct virtio_device *vdev)
 		mutex_lock(&vi->process_lock);
 		vi->hwrng_removed = true;
 		mutex_unlock(&vi->process_lock);
-		err = hwrng_register(&vi->hwrng);
+		err = virtrng_hwrng_register(vi);
 		if (!err) {
 			mutex_lock(&vi->process_lock);
 			vi->hwrng_register_done = true;
 			vi->hwrng_removed = false;
 			mutex_unlock(&vi->process_lock);
 		} else {
-			remove_common(vdev);
+			int teardown_err = remove_common(vdev);
+
+			if (teardown_err)
+				err = teardown_err;
 		}
 	}
 

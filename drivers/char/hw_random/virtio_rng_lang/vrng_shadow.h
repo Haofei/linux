@@ -72,5 +72,7 @@ int vrng_shadow_begin_remove(struct vrng_shadow *shadow);
 int vrng_shadow_finish_remove(struct vrng_shadow *shadow);
 void vrng_shadow_snapshot(struct vrng_shadow *shadow, u64 *events,
 			  u64 *mismatches, struct vrng_shadow_mismatch *last);
+void vrng_shadow_control_snapshot(struct vrng_shadow *shadow,
+				  struct vrng_core_state *state);
 
 #endif /* _VRNG_SHADOW_H */

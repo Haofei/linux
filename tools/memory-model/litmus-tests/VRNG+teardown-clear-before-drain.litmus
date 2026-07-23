@@ -1,0 +1,38 @@
+C VRNG+teardown-clear-before-drain
+
+(*
+ * Result: Sometimes
+ *
+ * Negative control for the former ordering.  Clearing data_avail before the
+ * callback drain permits a callback that already completed the logical state
+ * transition to republish availability before removal marks the state dead.
+ *)
+
+{}
+
+P0(int *logical, int *data_avail, int *callback_done, spinlock_t *core_lock)
+{
+	spin_lock(core_lock);
+	WRITE_ONCE(*logical, 1);
+	spin_unlock(core_lock);
+	smp_store_release(data_avail, 1);
+	smp_store_release(callback_done, 1);
+}
+
+P1(int *logical, int *data_avail, int *callback_done, spinlock_t *core_lock)
+{
+	int r0;
+	int r1;
+
+	spin_lock(core_lock);
+	r0 = READ_ONCE(*logical);
+	WRITE_ONCE(*logical, 2);
+	spin_unlock(core_lock);
+	WRITE_ONCE(*data_avail, 0);
+	r1 = smp_load_acquire(callback_done);
+	spin_lock(core_lock);
+	WRITE_ONCE(*logical, 3);
+	spin_unlock(core_lock);
+}
+
+exists (1:r0=1 /\ 1:r1=1 /\ logical=3 /\ data_avail=1)

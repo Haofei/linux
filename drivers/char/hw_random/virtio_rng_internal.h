@@ -37,4 +37,10 @@ static inline int virtrng_read_error(int fatal_errno, int *transient_errno)
 	return xchg(transient_errno, 0);
 }
 
+static inline void virtrng_record_first_error(int *first_error, int error)
+{
+	if (error && !*first_error)
+		*first_error = error;
+}
+
 #endif /* _VIRTIO_RNG_INTERNAL_H */

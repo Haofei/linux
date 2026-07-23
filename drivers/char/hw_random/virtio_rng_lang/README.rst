@@ -33,6 +33,13 @@ The state has independent lifecycle and buffer dimensions::
 has drained the virtqueue.  The glue calls ``finish_remove`` only after reset
 and ``del_vqs``; only then is the lifecycle ``Dead``.
 
+External availability follows the same physical-drain boundary.  Removal does
+not perform its final ``data_avail`` clear until reset and ``del_vqs`` have
+drained callbacks, so a callback that completed the logical transition cannot
+republish readiness after the final clear.  The return values from both logical
+removal transitions are retained and reported, while physical teardown always
+continues.
+
 Submission is transactional.  ``begin_submit`` logically transfers the buffer
 before the glue publishes a descriptor.  A failed ``virtqueue_add_inbuf`` is
 followed by ``abort_submit`` and is propagated without kicking the queue.  The
@@ -160,7 +167,8 @@ events.  KCSAN and the combined KASAN/UBSAN/lockdep/DMA-debug live runs passed
 with 1,213 and 1,216 matching events, respectively.  The deterministic live
 fault matrix recovered from zero-length and oversized completions, a stale
 generation, and one queue-add failure with 1,243 matching events.  The full
-24-test KUnit suite also passes on x86-64, arm64, and riscv64.  A PM-debug live
+24-test KUnit suite passed on x86-64, arm64, and riscv64 before the teardown-
+ordering review.  A PM-debug live
 run completed three device-level suspend/restore cycles, restored live reads
 after each cycle, and then passed synchronized unbind with zero mismatches; the
 same matrix also passes under KCSAN.  A QMP-controlled PCI hot-unplug terminated
@@ -174,8 +182,9 @@ capture with an injected mismatch.
 M4 adds a Kconfig choice for C, Rust, or MC control.  The selected core supplies
 the generation, completion, copy, resubmission, and removal outputs only after
 its complete transition matches the executable specification; other enabled
-cores remain differential shadows.  Each selection passes 24/24 KUnit tests on
-x86-64, arm64, and riscv64.  On x86-64, every selection also passes normal and
+cores remain differential shadows.  Each selection previously passed 24/24
+KUnit tests on x86-64, arm64, and riscv64.  On x86-64, every selection also
+passes normal and
 nonblocking reads, forced partial copies, the zero/oversize/stale/queue-add
 failure matrix, three suspend/restore cycles, and QMP PCI hot-unplug/replug with
 zero mismatches.
@@ -219,14 +228,27 @@ control in addition to the previously qualified C baseline.  These tests model
 CPU publication and wakeup ordering; virtio DMA synchronization remains in the
 transport and common C boundary.
 
-M6 adds a separate MC typed-DMA qualification variant.  The audited adoption
-boundary creates one linear CPU-owned handle; handoff consumes it and returns a
-device-owned handle with no CPU access API; reclaim consumes that handle before
-restoring CPU access.  The positive cycle emits Linux-profile LLVM and
-``vrng_dma_device_owned_read.mc`` fails semantic checking.  This proves only the
-typed-handle protocol: Linux allocation/mapping and any C raw alias retained
-outside the adopted capability remain trusted.  The live driver continues to
-use the common-C DMA allocation boundary.
+The teardown-ordering review adds a second publication contract.  The
+``VRNG+teardown-drain-before-clear`` model prohibits a Dead lifecycle with
+nonzero external availability after callback drain and final clear;
+``VRNG+teardown-clear-before-drain`` preserves the former ordering as a
+``Sometimes`` negative control.  Test-only ``lang_hold_publication`` and
+``lang_publication_held`` parameters expose the post-logical-completion,
+pre-publication window for deterministic removal testing.  The
+``lang_fail_register_once`` parameter qualifies that a failed ``.scan``
+registration leaves an explicit bound-but-unavailable device that remains safe
+to remove.
+
+M6 has symmetric MC and Rust typed-DMA qualification variants.  Each audited
+adoption boundary creates one CPU-owned handle; handoff consumes it and returns
+a device-owned handle with no CPU access API; reclaim consumes that handle
+before restoring CPU access.  The positive MC cycle emits Linux-profile LLVM
+and ``vrng_dma_device_owned_read.mc`` fails semantic checking.  The positive
+Rust cycle compiles as a library and ``vrng_dma_device_owned_read.rs`` fails
+with E0599 because ``DmaBuffer<DeviceOwned>`` exposes no CPU slice method.  This
+proves only the typed-handle protocols: Linux allocation/mapping and any C raw
+alias retained outside either adopted capability remain trusted.  The live
+driver continues to use the common-C DMA allocation boundary.
 
 MC contract fixtures
 ====================
@@ -241,4 +263,6 @@ candidate:
 * ``vrng_dma_ownership.mc``: accepted linear CPU/device ownership cycle over an
   audited Linux-buffer adoption boundary;
 * ``vrng_dma_device_owned_read.mc``: device-owned handle rejected by the CPU
-  access API.
+  access API;
+* ``vrng_dma_ownership.rs`` and ``vrng_dma_device_owned_read.rs``: symmetric
+  Rust typestate positive and compile-fail peers.

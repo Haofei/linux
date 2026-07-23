@@ -466,6 +466,18 @@ static void vrng_persistent_read_error_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, virtrng_read_error(0, &transient), 0);
 }
 
+static void vrng_first_error_test(struct kunit *test)
+{
+	int first_error = 0;
+
+	virtrng_record_first_error(&first_error, 0);
+	KUNIT_EXPECT_EQ(test, first_error, 0);
+	virtrng_record_first_error(&first_error, -EALREADY);
+	KUNIT_EXPECT_EQ(test, first_error, -EALREADY);
+	virtrng_record_first_error(&first_error, -EPROTO);
+	KUNIT_EXPECT_EQ(test, first_error, -EALREADY);
+}
+
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
 static void vrng_shadow_copy_output_validation_test(struct kunit *test)
 {
@@ -782,6 +794,27 @@ static void vrng_shadow_abort_sequence_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, shadow.c_state.lifecycle, (u32)VRNG_DEAD);
 }
 
+static void vrng_shadow_matched_remove_error_test(struct kunit *test)
+{
+	struct vrng_core_state final_state;
+	struct vrng_shadow_mismatch last;
+	struct vrng_shadow shadow;
+	u64 events, mismatches;
+
+	KUNIT_ASSERT_EQ(test, vrng_shadow_init(&shadow, 8), 0);
+	KUNIT_ASSERT_EQ(test, vrng_shadow_begin_remove(&shadow), 0);
+	KUNIT_EXPECT_EQ(test, vrng_shadow_begin_remove(&shadow), -EALREADY);
+	KUNIT_ASSERT_EQ(test, vrng_shadow_finish_remove(&shadow), 0);
+	vrng_shadow_control_snapshot(&shadow, &final_state);
+	vrng_shadow_snapshot(&shadow, &events, &mismatches, &last);
+
+	KUNIT_EXPECT_EQ(test, events, 4ULL);
+	KUNIT_EXPECT_EQ(test, mismatches, 0ULL);
+	KUNIT_EXPECT_EQ(test, shadow.c_state.lifecycle, (u32)VRNG_DEAD);
+	KUNIT_EXPECT_EQ(test, final_state.lifecycle, (u32)VRNG_DEAD);
+	KUNIT_EXPECT_EQ(test, final_state.phase, (u32)VRNG_EMPTY);
+}
+
 static void vrng_shadow_cookie_generation_test(struct kunit *test)
 {
 	struct vrng_shadow_mismatch last;
@@ -875,6 +908,7 @@ static struct kunit_case vrng_core_test_cases[] = {
 	KUNIT_CASE(vrng_c_copy_contract_test),
 	KUNIT_CASE(vrng_partial_copy_accounting_test),
 	KUNIT_CASE(vrng_persistent_read_error_test),
+	KUNIT_CASE(vrng_first_error_test),
 	KUNIT_CASE(vrng_bounded_state_space_test),
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_RUST)
 	KUNIT_CASE(vrng_rust_directed_test),
@@ -891,6 +925,7 @@ static struct kunit_case vrng_core_test_cases[] = {
 	KUNIT_CASE(vrng_shadow_control_validation_test),
 	KUNIT_CASE(vrng_shadow_normal_sequence_test),
 	KUNIT_CASE(vrng_shadow_abort_sequence_test),
+	KUNIT_CASE(vrng_shadow_matched_remove_error_test),
 	KUNIT_CASE(vrng_shadow_cookie_generation_test),
 	KUNIT_CASE(vrng_shadow_selected_control_test),
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_RUST) || \
