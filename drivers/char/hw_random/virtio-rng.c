@@ -41,14 +41,50 @@ static int vrng_lang_completion_held;
 static int vrng_lang_hold_publication;
 static int vrng_lang_publication_held;
 static int vrng_lang_fail_register_once;
+static int vrng_lang_fail_teardown_once;
 static int vrng_lang_remove_begun;
 static int vrng_lang_last_remove_data_avail = -1;
 static int vrng_lang_last_remove_lifecycle = -1;
 static int vrng_lang_last_remove_phase = -1;
-static int vrng_lang_last_driver_stage = -1;
-static int vrng_lang_last_driver_avail = -1;
-static unsigned long vrng_lang_last_driver_events;
-static unsigned long vrng_lang_last_driver_mismatches;
+struct vrng_teardown_record {
+	u64 sequence;
+	u64 device_cookie;
+	s32 teardown_error;
+	s32 stage;
+	s32 external_avail;
+	u64 events;
+	u64 mismatches;
+};
+
+static DEFINE_MUTEX(vrng_teardown_record_lock);
+static struct vrng_teardown_record vrng_last_teardown_record = {
+	.stage = -1,
+	.external_avail = -1,
+};
+
+static u64 vrng_next_device_cookie;
+
+static int vrng_teardown_record_get(char *buffer,
+				    const struct kernel_param *kp)
+{
+	struct vrng_teardown_record record;
+
+	(void)kp;
+	mutex_lock(&vrng_teardown_record_lock);
+	record = vrng_last_teardown_record;
+	mutex_unlock(&vrng_teardown_record_lock);
+
+	return scnprintf(buffer, PAGE_SIZE,
+			 "sequence=%llu device=%llu error=%d stage=%d avail=%d events=%llu mismatches=%llu\n",
+			 record.sequence, record.device_cookie,
+			 record.teardown_error, record.stage,
+			 record.external_avail, record.events,
+			 record.mismatches);
+}
+
+static const struct kernel_param_ops vrng_teardown_record_ops = {
+	.get = vrng_teardown_record_get,
+};
 module_param_named(lang_fail_add_once, vrng_lang_fail_add_once, int, 0600);
 module_param_named(lang_completion_override, vrng_lang_completion_override,
 		   int, 0600);
@@ -59,6 +95,8 @@ module_param_named(lang_hold_publication, vrng_lang_hold_publication, int, 0600)
 module_param_named(lang_publication_held, vrng_lang_publication_held, int, 0400);
 module_param_named(lang_fail_register_once, vrng_lang_fail_register_once, int,
 		   0600);
+module_param_named(lang_fail_teardown_once, vrng_lang_fail_teardown_once, int,
+		   0600);
 module_param_named(lang_remove_begun, vrng_lang_remove_begun, int, 0400);
 module_param_named(lang_last_remove_data_avail,
 		   vrng_lang_last_remove_data_avail, int, 0400);
@@ -66,14 +104,7 @@ module_param_named(lang_last_remove_lifecycle,
 		   vrng_lang_last_remove_lifecycle, int, 0400);
 module_param_named(lang_last_remove_phase, vrng_lang_last_remove_phase, int,
 		   0400);
-module_param_named(lang_last_driver_stage, vrng_lang_last_driver_stage, int,
-		   0400);
-module_param_named(lang_last_driver_avail, vrng_lang_last_driver_avail, int,
-		   0400);
-module_param_named(lang_last_driver_events, vrng_lang_last_driver_events,
-		   ulong, 0400);
-module_param_named(lang_last_driver_mismatches,
-		   vrng_lang_last_driver_mismatches, ulong, 0400);
+module_param_cb(lang_last_driver_record, &vrng_teardown_record_ops, NULL, 0400);
 MODULE_PARM_DESC(lang_fail_add_once,
 		 "fail the next experimental virtqueue submission");
 MODULE_PARM_DESC(lang_completion_override,
@@ -90,6 +121,8 @@ MODULE_PARM_DESC(lang_publication_held,
 		 "indicate that an experimental completion publication is paused");
 MODULE_PARM_DESC(lang_fail_register_once,
 		 "fail the next experimental hwrng registration");
+MODULE_PARM_DESC(lang_fail_teardown_once,
+		 "inject a logical teardown error after physical cleanup");
 MODULE_PARM_DESC(lang_remove_begun,
 		 "indicate that experimental logical removal has begun");
 MODULE_PARM_DESC(lang_last_remove_data_avail,
@@ -98,14 +131,8 @@ MODULE_PARM_DESC(lang_last_remove_lifecycle,
 		 "logical lifecycle recorded after the last removal");
 MODULE_PARM_DESC(lang_last_remove_phase,
 		 "logical phase recorded after the last removal");
-MODULE_PARM_DESC(lang_last_driver_stage,
-		 "driver lifecycle stage recorded after the last removal");
-MODULE_PARM_DESC(lang_last_driver_avail,
-		 "driver lifecycle availability recorded after the last removal");
-MODULE_PARM_DESC(lang_last_driver_events,
-		 "driver lifecycle events recorded after the last removal");
-MODULE_PARM_DESC(lang_last_driver_mismatches,
-		 "driver lifecycle mismatches recorded after the last removal");
+MODULE_PARM_DESC(lang_last_driver_record,
+		 "coherent sequenced driver lifecycle record after removal");
 #endif
 
 struct virtrng_info;
@@ -152,6 +179,7 @@ struct virtrng_info {
 	bool shadow_initialized;
 	bool shadow_active;
 	bool driver_shadow_initialized;
+	u64 evidence_cookie;
 #endif
 };
 
@@ -523,16 +551,15 @@ static int probe_common(struct virtio_device *vdev)
 	if (err)
 		goto err_request;
 	vi->driver_shadow_initialized = true;
+	mutex_lock(&vrng_teardown_record_lock);
+	vi->evidence_cookie = ++vrng_next_device_cookie;
+	mutex_unlock(&vrng_teardown_record_lock);
 	WRITE_ONCE(vrng_lang_completion_held, 0);
 	WRITE_ONCE(vrng_lang_publication_held, 0);
 	WRITE_ONCE(vrng_lang_remove_begun, 0);
 	WRITE_ONCE(vrng_lang_last_remove_data_avail, -1);
 	WRITE_ONCE(vrng_lang_last_remove_lifecycle, -1);
 	WRITE_ONCE(vrng_lang_last_remove_phase, -1);
-	WRITE_ONCE(vrng_lang_last_driver_stage, -1);
-	WRITE_ONCE(vrng_lang_last_driver_avail, -1);
-	WRITE_ONCE(vrng_lang_last_driver_events, 0);
-	WRITE_ONCE(vrng_lang_last_driver_mismatches, 0);
 #endif
 	mutex_lock(&vi->process_lock);
 	err = request_entropy_locked(vi);
@@ -647,14 +674,23 @@ static int remove_common(struct virtio_device *vdev)
 		vrng_driver_shadow_snapshot(&vi->driver_shadow, &driver_events,
 					    &driver_mismatches,
 					    &final_driver_state);
-	WRITE_ONCE(vrng_lang_last_driver_events, driver_events);
-	WRITE_ONCE(vrng_lang_last_driver_mismatches, driver_mismatches);
+	if (xchg(&vrng_lang_fail_teardown_once, 0))
+		virtrng_record_first_error(&first_err, -EPROTO);
+	mutex_lock(&vrng_teardown_record_lock);
+	vrng_last_teardown_record.sequence++;
+	vrng_last_teardown_record.device_cookie = vi->evidence_cookie;
+	vrng_last_teardown_record.teardown_error = first_err;
+	vrng_last_teardown_record.events = driver_events;
+	vrng_last_teardown_record.mismatches = driver_mismatches;
 	if (vi->driver_shadow_initialized) {
-		WRITE_ONCE(vrng_lang_last_driver_stage,
-			   final_driver_state.stage);
-		WRITE_ONCE(vrng_lang_last_driver_avail,
-			   final_driver_state.external_avail);
+		vrng_last_teardown_record.stage = final_driver_state.stage;
+		vrng_last_teardown_record.external_avail =
+			final_driver_state.external_avail;
+	} else {
+		vrng_last_teardown_record.stage = -1;
+		vrng_last_teardown_record.external_avail = -1;
 	}
+	mutex_unlock(&vrng_teardown_record_lock);
 	if (mismatches || driver_mismatches)
 		dev_warn(&vdev->dev,
 			 "language shadow control=%s mismatches=%llu events=%llu driver_mismatches=%llu driver_events=%llu teardown_error=%d last_event=%u last_sequence=%llu C=%d Rust=%d MC=%d spec=%d\n",
