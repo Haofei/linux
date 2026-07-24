@@ -169,8 +169,10 @@ with 1,213 and 1,216 matching events, respectively.  The deterministic live
 fault matrix recovered from zero-length and oversized completions, a stale
 generation, and one queue-add failure with 1,243 matching events.  The full
 24-test KUnit suite passed on x86-64, arm64, and riscv64 before the teardown-
-ordering review.  The repaired teardown and registration lifecycle passes the
-expanded 26-test x86-64 suite for C, Rust, and MC control.  A PM-debug live
+ordering review.  The repaired teardown and registration lifecycle first
+passed the expanded 26-test x86-64 suite for C, Rust, and MC control.  The M7
+lifecycle-policy integration now passes 30/30 tests for each controller.  A
+PM-debug live
 run completed three device-level suspend/restore cycles, restored live reads
 after each cycle, and then passed synchronized unbind with zero mismatches; the
 same matrix also passes under KCSAN.  A QMP-controlled PCI hot-unplug terminated
@@ -186,7 +188,8 @@ the generation, completion, copy, resubmission, and removal outputs only after
 its complete transition matches the executable specification; other enabled
 cores remain differential shadows.  Each selection passed 24/24 KUnit tests on
 x86-64, arm64, and riscv64 before the teardown review.  After the repair, each
-selection passes the expanded 26/26 x86-64 suite.  On x86-64, every selection
+selection passed the expanded 26/26 x86-64 repair suite and now passes the M7
+30/30 suite.  On x86-64, every selection
 also passes normal and
 nonblocking reads, forced partial copies, the zero/oversize/stale/queue-add
 failure matrix, three suspend/restore cycles, and QMP PCI hot-unplug/replug with
@@ -259,7 +262,7 @@ hardened source index and amount.  The common ABI already requires the private
 candidate buffers to be valid and non-overlapping for that extent.  This keeps
 the trusted boundary visible while allowing the platform bulk-copy
 implementation instead of preserving a byte-at-a-time raw-pointer loop.  The
-expanded 26-test KUnit suite, host differential corpus, mutation matrix, and
+expanded 30-test KUnit suite, host differential corpus, mutation matrix, and
 live completion/queue-fault path pass with the bulk-copy implementation.
 
 M6 has symmetric MC and Rust typed-DMA qualification variants.  Each audited
@@ -285,7 +288,15 @@ hwrng calls, reset, callback synchronization, virtqueue deletion, allocation,
 DMA, and external stores remain common C effects, so this is not a five-
 complete-driver claim.  The MC callback-reachable lifecycle call graph is
 qualified with both ``#[irq_context]`` and ``#[no_lang_trap]``.  The expanded
-x86-64 QEMU suite passes all 30 KUnit tests.
+x86-64 QEMU suite passes all 30 KUnit tests.  The live driver publishes a
+read-only final lifecycle snapshot after callback drain; the guest requires
+``Dead``, zero external availability, a nonzero event count, and zero
+mismatches after every final unbind.  For each C, Rust, and MC live controller,
+the normal, completion/queue fault, registration-failure, three-cycle PM, and
+QMP hot-unplug/replug modes pass these assertions.  The normal synchronized-
+unbind path records 1,217 protocol and 368 lifecycle events.  Strict KCSAN and
+combined KASAN/UBSAN/lockdep/DEBUG_ATOMIC_SLEEP/DMA-API-debug kernels repeat
+that path for all three controllers with 30/30 KUnit tests and no diagnostic.
 
 MC contract fixtures
 ====================

@@ -45,6 +45,10 @@ static int vrng_lang_remove_begun;
 static int vrng_lang_last_remove_data_avail = -1;
 static int vrng_lang_last_remove_lifecycle = -1;
 static int vrng_lang_last_remove_phase = -1;
+static int vrng_lang_last_driver_stage = -1;
+static int vrng_lang_last_driver_avail = -1;
+static unsigned long vrng_lang_last_driver_events;
+static unsigned long vrng_lang_last_driver_mismatches;
 module_param_named(lang_fail_add_once, vrng_lang_fail_add_once, int, 0600);
 module_param_named(lang_completion_override, vrng_lang_completion_override,
 		   int, 0600);
@@ -62,6 +66,14 @@ module_param_named(lang_last_remove_lifecycle,
 		   vrng_lang_last_remove_lifecycle, int, 0400);
 module_param_named(lang_last_remove_phase, vrng_lang_last_remove_phase, int,
 		   0400);
+module_param_named(lang_last_driver_stage, vrng_lang_last_driver_stage, int,
+		   0400);
+module_param_named(lang_last_driver_avail, vrng_lang_last_driver_avail, int,
+		   0400);
+module_param_named(lang_last_driver_events, vrng_lang_last_driver_events,
+		   ulong, 0400);
+module_param_named(lang_last_driver_mismatches,
+		   vrng_lang_last_driver_mismatches, ulong, 0400);
 MODULE_PARM_DESC(lang_fail_add_once,
 		 "fail the next experimental virtqueue submission");
 MODULE_PARM_DESC(lang_completion_override,
@@ -86,6 +98,14 @@ MODULE_PARM_DESC(lang_last_remove_lifecycle,
 		 "logical lifecycle recorded after the last removal");
 MODULE_PARM_DESC(lang_last_remove_phase,
 		 "logical phase recorded after the last removal");
+MODULE_PARM_DESC(lang_last_driver_stage,
+		 "driver lifecycle stage recorded after the last removal");
+MODULE_PARM_DESC(lang_last_driver_avail,
+		 "driver lifecycle availability recorded after the last removal");
+MODULE_PARM_DESC(lang_last_driver_events,
+		 "driver lifecycle events recorded after the last removal");
+MODULE_PARM_DESC(lang_last_driver_mismatches,
+		 "driver lifecycle mismatches recorded after the last removal");
 #endif
 
 struct virtrng_info;
@@ -509,6 +529,10 @@ static int probe_common(struct virtio_device *vdev)
 	WRITE_ONCE(vrng_lang_last_remove_data_avail, -1);
 	WRITE_ONCE(vrng_lang_last_remove_lifecycle, -1);
 	WRITE_ONCE(vrng_lang_last_remove_phase, -1);
+	WRITE_ONCE(vrng_lang_last_driver_stage, -1);
+	WRITE_ONCE(vrng_lang_last_driver_avail, -1);
+	WRITE_ONCE(vrng_lang_last_driver_events, 0);
+	WRITE_ONCE(vrng_lang_last_driver_mismatches, 0);
 #endif
 	mutex_lock(&vi->process_lock);
 	err = request_entropy_locked(vi);
@@ -623,6 +647,14 @@ static int remove_common(struct virtio_device *vdev)
 		vrng_driver_shadow_snapshot(&vi->driver_shadow, &driver_events,
 					    &driver_mismatches,
 					    &final_driver_state);
+	WRITE_ONCE(vrng_lang_last_driver_events, driver_events);
+	WRITE_ONCE(vrng_lang_last_driver_mismatches, driver_mismatches);
+	if (vi->driver_shadow_initialized) {
+		WRITE_ONCE(vrng_lang_last_driver_stage,
+			   final_driver_state.stage);
+		WRITE_ONCE(vrng_lang_last_driver_avail,
+			   final_driver_state.external_avail);
+	}
 	if (mismatches || driver_mismatches)
 		dev_warn(&vdev->dev,
 			 "language shadow control=%s mismatches=%llu events=%llu driver_mismatches=%llu driver_events=%llu teardown_error=%d last_event=%u last_sequence=%llu C=%d Rust=%d MC=%d spec=%d\n",
