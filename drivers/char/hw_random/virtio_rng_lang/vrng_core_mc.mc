@@ -52,6 +52,11 @@ open enum DecodedState: u32 {
 }
 
 extern "C" fn vrng_core_index_nospec(index: u32, size: u32) -> u32;
+extern "C" fn memcpy(
+    destination: [*]mut u8,
+    source: [*]const u8,
+    length: usize,
+) -> [*]mut u8;
 
 #[irq_context]
 #[no_lang_trap]
@@ -270,21 +275,19 @@ export fn vrng_core_mc_copy(
                             next_idx = unchecked.add(hardened_index, amount);
                             next_avail = unchecked.sub(state.data_avail, amount);
                         }
-                        var i: u32 = 0;
-                        while i < amount {
-                            var source_index: u32 = 0;
-                            // The hardened index and guards establish the range.
-                            #[unsafe_contract(no_overflow)]
-                            {
-                                source_index = unchecked.add(hardened_index, i);
-                            }
-                            unsafe {
-                                destination.offset(i as usize).* = dma_buffer.offset(source_index as usize).*;
-                            }
-                            #[unsafe_contract(no_overflow)]
-                            {
-                                i = unchecked.add(i, 1);
-                            }
+                        // The common ABI requires the private candidate buffers
+                        // to be valid and non-overlapping for `amount` bytes.
+                        // Keep that bulk-copy contract explicit so both MC
+                        // backends can use the platform's optimized memcpy
+                        // rather than preserving a byte-at-a-time raw loop.
+                        unsafe {
+                            memcpy(
+                                destination as [*]mut u8,
+                                dma_buffer.offset(
+                                    hardened_index as usize,
+                                ) as [*]const u8,
+                                amount as usize,
+                            );
                         }
                         copied.* = amount;
                         if next_avail == 0 {

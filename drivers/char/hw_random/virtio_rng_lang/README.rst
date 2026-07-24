@@ -253,6 +253,14 @@ Together with the five teardown/publication LKMM models, the repaired x86-64
 KUnit and live matrices close the M4 teardown-error and M5 publication-ordering
 requalification.
 
+The MC copy transition uses one explicit C-ABI ``memcpy`` after validating the
+hardened source index and amount.  The common ABI already requires the private
+candidate buffers to be valid and non-overlapping for that extent.  This keeps
+the trusted boundary visible while allowing the platform bulk-copy
+implementation instead of preserving a byte-at-a-time raw-pointer loop.  The
+expanded 26-test KUnit suite, host differential corpus, mutation matrix, and
+live completion/queue-fault path pass with the bulk-copy implementation.
+
 M6 has symmetric MC and Rust typed-DMA qualification variants.  Each audited
 adoption boundary creates one CPU-owned handle; handoff consumes it and returns
 a device-owned handle with no CPU access API; reclaim consumes that handle
