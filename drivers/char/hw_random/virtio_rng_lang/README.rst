@@ -113,7 +113,7 @@ non-aliasing, serialization, and IRQ-context requirements.
 Testing
 =======
 
-Current status (2026-07-20)
+Current status (2026-07-23)
 ---------------------------
 
 The executable specification and all three candidates are implemented.  The
@@ -168,7 +168,8 @@ with 1,213 and 1,216 matching events, respectively.  The deterministic live
 fault matrix recovered from zero-length and oversized completions, a stale
 generation, and one queue-add failure with 1,243 matching events.  The full
 24-test KUnit suite passed on x86-64, arm64, and riscv64 before the teardown-
-ordering review.  A PM-debug live
+ordering review.  The repaired teardown and registration lifecycle passes the
+expanded 26-test x86-64 suite for C, Rust, and MC control.  A PM-debug live
 run completed three device-level suspend/restore cycles, restored live reads
 after each cycle, and then passed synchronized unbind with zero mismatches; the
 same matrix also passes under KCSAN.  A QMP-controlled PCI hot-unplug terminated
@@ -182,9 +183,10 @@ capture with an injected mismatch.
 M4 adds a Kconfig choice for C, Rust, or MC control.  The selected core supplies
 the generation, completion, copy, resubmission, and removal outputs only after
 its complete transition matches the executable specification; other enabled
-cores remain differential shadows.  Each selection previously passed 24/24
-KUnit tests on x86-64, arm64, and riscv64.  On x86-64, every selection also
-passes normal and
+cores remain differential shadows.  Each selection passed 24/24 KUnit tests on
+x86-64, arm64, and riscv64 before the teardown review.  After the repair, each
+selection passes the expanded 26/26 x86-64 suite.  On x86-64, every selection
+also passes normal and
 nonblocking reads, forced partial copies, the zero/oversize/stale/queue-add
 failure matrix, three suspend/restore cycles, and QMP PCI hot-unplug/replug with
 zero mismatches.
@@ -223,9 +225,14 @@ M5 retains the common-lock baseline.  Herdtools7 7.58 proves that the
 release/acquire publication and completion-lock wakeup models prohibit a reader
 from observing readiness without the preceding data write.  A plain-access
 negative control permits the bad outcome, so the formal gate is non-vacuous.
-Live KCSAN and combined KASAN/UBSAN/lockdep/DMA-debug runs cover Rust and MC
-control in addition to the previously qualified C baseline.  These tests model
-CPU publication and wakeup ordering; virtio DMA synchronization remains in the
+Strict KCSAN KUnit and live runs pass with C, Rust, and MC control after the
+teardown repair.  The C run additionally covers deterministic completion,
+queue-add, and registration-failure injection.  Combined
+KASAN/UBSAN/lockdep/DEBUG_ATOMIC_SLEEP/DMA-API-debug KUnit and live runs also
+pass with all three controllers; the C run again covers the completion,
+queue-add, and registration-failure paths.  No sanitizer, data-race, lockdep,
+atomic-sleep, or DMA-API diagnostic was reported.  These tests model CPU
+publication and wakeup ordering; virtio DMA synchronization remains in the
 transport and common C boundary.
 
 The teardown-ordering review adds a second publication contract.  The
@@ -238,6 +245,13 @@ pre-publication window for deterministic removal testing.  The
 ``lang_fail_register_once`` parameter qualifies that a failed ``.scan``
 registration leaves an explicit bound-but-unavailable device that remains safe
 to remove.
+
+The deterministic post-core/pre-publication test now reaches ``begin_remove``
+before releasing the callback, then requires final ``Dead/Empty`` logical state
+and zero external availability.  It passes with all three controlling cores.
+Together with the five teardown/publication LKMM models, the repaired x86-64
+KUnit and live matrices close the M4 teardown-error and M5 publication-ordering
+requalification.
 
 M6 has symmetric MC and Rust typed-DMA qualification variants.  Each audited
 adoption boundary creates one CPU-owned handle; handoff consumes it and returns
