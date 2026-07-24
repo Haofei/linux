@@ -6,8 +6,9 @@ Scope
 =====
 
 This directory compares C, Rust, and MC implementations of the logical
-single-buffer virtio-rng protocol.  The production ``virtio-rng.c`` driver is
-not changed during the specification and KUnit milestones.
+single-buffer virtio-rng protocol.  The specification and early KUnit
+milestones do not change ``virtio-rng.c``; later shadow milestones integrate
+the qualified models with the live driver.
 
 The common C/Linux glue will continue to own allocation, DMA grouping and
 mapping, virtqueue operations, callback entry, completion wakeups, PM, and
@@ -113,7 +114,7 @@ non-aliasing, serialization, and IRQ-context requirements.
 Testing
 =======
 
-Current status (2026-07-23)
+Current status (2026-07-24)
 ---------------------------
 
 The executable specification and all three candidates are implemented.  The
@@ -271,6 +272,20 @@ with E0599 because ``DmaBuffer<DeviceOwned>`` exposes no CPU slice method.  This
 proves only the typed-handle protocols: Linux allocation/mapping and any C raw
 alias retained outside either adopted capability remain trusted.  The live
 driver continues to use the common-C DMA allocation boundary.
+
+M7 adds a second ABI for driver lifecycle policy.  An independent executable
+specification is compared with C, Rust-raw, Rust-safe-value, MC-raw, and
+MC-contract candidates for registration, callback completion, external
+publication, unregister-once, callback drain, final clear, and logical death.
+The host gate enumerates 31 reachable lifecycle states and performs 1,550
+result/outcome/post-state comparisons; an injected C final-clear mutation is
+detected.  New KUnit cases cover the normal sequence, registration failure,
+invalid teardown ordering, and callback publication during removal.  Physical
+hwrng calls, reset, callback synchronization, virtqueue deletion, allocation,
+DMA, and external stores remain common C effects, so this is not a five-
+complete-driver claim.  The MC callback-reachable lifecycle call graph is
+qualified with both ``#[irq_context]`` and ``#[no_lang_trap]``.  The expanded
+x86-64 QEMU suite passes all 30 KUnit tests.
 
 MC contract fixtures
 ====================

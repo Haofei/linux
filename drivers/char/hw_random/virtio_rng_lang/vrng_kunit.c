@@ -7,7 +7,9 @@
 #include "../virtio_rng_internal.h"
 #include "vrng_core_abi.h"
 #include "vrng_core_spec.h"
+#include "vrng_driver_abi.h"
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
+#include "vrng_driver_shadow.h"
 #include "vrng_shadow.h"
 #endif
 
@@ -897,6 +899,166 @@ static void vrng_shadow_mismatch_record_test(struct kunit *test)
 #endif
 #endif
 
+struct vrng_driver_matrix {
+	struct vrng_driver_state spec;
+	struct vrng_driver_state c;
+#if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_RUST)
+	struct vrng_driver_state rust_raw;
+	struct vrng_driver_state rust_safe;
+#endif
+#if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_MC)
+	struct vrng_driver_state mc_raw;
+	struct vrng_driver_state mc_contract;
+#endif
+};
+
+typedef int (*vrng_driver_step_fn)(struct vrng_driver_state *, u32, u32,
+				   struct vrng_driver_outcome *);
+
+static void vrng_expect_driver_step(struct kunit *test,
+				    struct vrng_driver_state *state,
+				    vrng_driver_step_fn step, u32 event,
+				    u32 value, int expected_result,
+				    const struct vrng_driver_outcome *expected_out,
+				    const struct vrng_driver_state *expected_state)
+{
+	struct vrng_driver_outcome actual_out = {};
+	int result;
+
+	result = step(state, event, value, &actual_out);
+	KUNIT_EXPECT_EQ(test, result, expected_result);
+	KUNIT_EXPECT_MEMEQ(test, &actual_out, expected_out,
+			   sizeof(*expected_out));
+	KUNIT_EXPECT_MEMEQ(test, state, expected_state,
+			   sizeof(*expected_state));
+}
+
+static void vrng_driver_matrix_step(struct kunit *test,
+				    struct vrng_driver_matrix *matrix,
+				    u32 event, u32 value, int expected_result,
+				    bool unregister_required)
+{
+	struct vrng_driver_outcome spec_out = {};
+	int result;
+
+	result = vrng_driver_spec_step(&matrix->spec, event, value, &spec_out);
+	KUNIT_ASSERT_EQ(test, result, expected_result);
+	KUNIT_EXPECT_EQ(test, spec_out.unregister_required,
+			(u32)unregister_required);
+	vrng_expect_driver_step(test, &matrix->c, vrng_driver_c_step, event,
+				value, expected_result, &spec_out,
+				&matrix->spec);
+#if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_RUST)
+	vrng_expect_driver_step(test, &matrix->rust_raw,
+				vrng_driver_rust_raw_step, event, value,
+				expected_result, &spec_out, &matrix->spec);
+	vrng_expect_driver_step(test, &matrix->rust_safe,
+				vrng_driver_rust_safe_step, event, value,
+				expected_result, &spec_out, &matrix->spec);
+#endif
+#if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_MC)
+	vrng_expect_driver_step(test, &matrix->mc_raw,
+				vrng_driver_mc_raw_step, event, value,
+				expected_result, &spec_out, &matrix->spec);
+	vrng_expect_driver_step(test, &matrix->mc_contract,
+				vrng_driver_mc_contract_step, event, value,
+				expected_result, &spec_out, &matrix->spec);
+#endif
+}
+
+static void vrng_driver_lifecycle_sequence_test(struct kunit *test)
+{
+	struct vrng_driver_matrix matrix = {};
+
+	vrng_driver_matrix_step(test, &matrix, VRNG_DRIVER_INIT, 0, 0, false);
+	vrng_driver_matrix_step(test, &matrix, VRNG_DRIVER_REGISTER, 1, 0,
+				false);
+	vrng_driver_matrix_step(test, &matrix, VRNG_DRIVER_CALLBACK_COMPLETE,
+				32, 0, false);
+	vrng_driver_matrix_step(test, &matrix, VRNG_DRIVER_PUBLISH, 0, 0,
+				false);
+	vrng_driver_matrix_step(test, &matrix, VRNG_DRIVER_BEGIN_REMOVE, 0, 0,
+				true);
+	vrng_driver_matrix_step(test, &matrix, VRNG_DRIVER_DRAIN, 0, 0, false);
+	vrng_driver_matrix_step(test, &matrix, VRNG_DRIVER_FINAL_CLEAR, 0, 0,
+				false);
+	vrng_driver_matrix_step(test, &matrix, VRNG_DRIVER_FINISH_REMOVE, 0, 0,
+				false);
+	KUNIT_EXPECT_EQ(test, matrix.spec.stage, (u32)VRNG_DRIVER_DEAD);
+	KUNIT_EXPECT_EQ(test, matrix.spec.external_avail, 0U);
+}
+
+static void vrng_driver_remove_publication_window_test(struct kunit *test)
+{
+	struct vrng_driver_matrix matrix = {};
+
+	vrng_driver_matrix_step(test, &matrix, VRNG_DRIVER_INIT, 0, 0, false);
+	vrng_driver_matrix_step(test, &matrix, VRNG_DRIVER_REGISTER, 1, 0,
+				false);
+	vrng_driver_matrix_step(test, &matrix, VRNG_DRIVER_CALLBACK_COMPLETE,
+				16, 0, false);
+	vrng_driver_matrix_step(test, &matrix, VRNG_DRIVER_BEGIN_REMOVE, 0, 0,
+				true);
+	/* A held callback may publish until reset has drained callbacks. */
+	vrng_driver_matrix_step(test, &matrix, VRNG_DRIVER_PUBLISH, 0, 0,
+				false);
+	vrng_driver_matrix_step(test, &matrix, VRNG_DRIVER_FINAL_CLEAR, 0,
+				-EBUSY, false);
+	vrng_driver_matrix_step(test, &matrix, VRNG_DRIVER_DRAIN, 0, 0, false);
+	vrng_driver_matrix_step(test, &matrix, VRNG_DRIVER_FINAL_CLEAR, 0, 0,
+				false);
+	vrng_driver_matrix_step(test, &matrix, VRNG_DRIVER_FINISH_REMOVE, 0, 0,
+				false);
+	KUNIT_EXPECT_EQ(test, matrix.spec.stage, (u32)VRNG_DRIVER_DEAD);
+	KUNIT_EXPECT_EQ(test, matrix.spec.external_avail, 0U);
+}
+
+static void vrng_driver_registration_failure_test(struct kunit *test)
+{
+	struct vrng_driver_matrix matrix = {};
+
+	vrng_driver_matrix_step(test, &matrix, VRNG_DRIVER_INIT, 0, 0, false);
+	vrng_driver_matrix_step(test, &matrix, VRNG_DRIVER_REGISTER, 0, 0,
+				false);
+	vrng_driver_matrix_step(test, &matrix, VRNG_DRIVER_BEGIN_REMOVE, 0, 0,
+				false);
+	vrng_driver_matrix_step(test, &matrix, VRNG_DRIVER_BEGIN_REMOVE, 0,
+				-EALREADY, false);
+	vrng_driver_matrix_step(test, &matrix, VRNG_DRIVER_DRAIN, 0, 0, false);
+	vrng_driver_matrix_step(test, &matrix, VRNG_DRIVER_CALLBACK_COMPLETE,
+				8, -EINVAL, false);
+	vrng_driver_matrix_step(test, &matrix, VRNG_DRIVER_FINAL_CLEAR, 0, 0,
+				false);
+	vrng_driver_matrix_step(test, &matrix, VRNG_DRIVER_FINISH_REMOVE, 0, 0,
+				false);
+}
+
+#if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
+static void vrng_driver_shadow_sequence_test(struct kunit *test)
+{
+	struct vrng_driver_shadow shadow;
+	struct vrng_driver_state state;
+	bool unregister = false;
+	u64 events, mismatches;
+
+	KUNIT_ASSERT_EQ(test, vrng_driver_shadow_init(&shadow), 0);
+	KUNIT_ASSERT_EQ(test, vrng_driver_shadow_register(&shadow, true), 0);
+	KUNIT_ASSERT_EQ(test, vrng_driver_shadow_complete(&shadow, 32), 0);
+	KUNIT_ASSERT_EQ(test,
+			vrng_driver_shadow_begin_remove(&shadow, &unregister), 0);
+	KUNIT_EXPECT_TRUE(test, unregister);
+	KUNIT_ASSERT_EQ(test, vrng_driver_shadow_publish(&shadow), 0);
+	KUNIT_ASSERT_EQ(test, vrng_driver_shadow_drain(&shadow), 0);
+	KUNIT_ASSERT_EQ(test, vrng_driver_shadow_final_clear(&shadow), 0);
+	KUNIT_ASSERT_EQ(test, vrng_driver_shadow_finish_remove(&shadow), 0);
+	vrng_driver_shadow_snapshot(&shadow, &events, &mismatches, &state);
+	KUNIT_EXPECT_EQ(test, events, 8ULL);
+	KUNIT_EXPECT_EQ(test, mismatches, 0ULL);
+	KUNIT_EXPECT_EQ(test, state.stage, (u32)VRNG_DRIVER_DEAD);
+	KUNIT_EXPECT_EQ(test, state.external_avail, 0U);
+}
+#endif
+
 static struct kunit_case vrng_core_test_cases[] = {
 	KUNIT_CASE(vrng_normal_sequence_test),
 	KUNIT_CASE(vrng_abort_and_stale_test),
@@ -910,6 +1072,9 @@ static struct kunit_case vrng_core_test_cases[] = {
 	KUNIT_CASE(vrng_persistent_read_error_test),
 	KUNIT_CASE(vrng_first_error_test),
 	KUNIT_CASE(vrng_bounded_state_space_test),
+	KUNIT_CASE(vrng_driver_lifecycle_sequence_test),
+	KUNIT_CASE(vrng_driver_remove_publication_window_test),
+	KUNIT_CASE(vrng_driver_registration_failure_test),
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_RUST)
 	KUNIT_CASE(vrng_rust_directed_test),
 	KUNIT_CASE(vrng_rust_bounded_state_space_test),
@@ -928,6 +1093,7 @@ static struct kunit_case vrng_core_test_cases[] = {
 	KUNIT_CASE(vrng_shadow_matched_remove_error_test),
 	KUNIT_CASE(vrng_shadow_cookie_generation_test),
 	KUNIT_CASE(vrng_shadow_selected_control_test),
+	KUNIT_CASE(vrng_driver_shadow_sequence_test),
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_RUST) || \
 	IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_MC)
 	KUNIT_CASE(vrng_shadow_mismatch_record_test),

@@ -24,13 +24,18 @@ obj-$(CONFIG_HW_RANDOM_VIRTIO) += virtio-rng.o
 obj-$(CONFIG_HW_RANDOM_VIRTIO_LANG_CORE) += virtio_rng_lang_core.o
 virtio_rng_lang_core-y := \
 	virtio_rng_lang/vrng_core_c.o \
-	virtio_rng_lang/vrng_core_spec.o
+	virtio_rng_lang/vrng_core_spec.o \
+	virtio_rng_lang/vrng_driver_c.o \
+	virtio_rng_lang/vrng_driver_spec.o
 virtio_rng_lang_core-$(CONFIG_HW_RANDOM_VIRTIO_LANG_RUST) += \
-	virtio_rng_lang/vrng_core_rust.o
+	virtio_rng_lang/vrng_core_rust.o \
+	virtio_rng_lang/vrng_driver_rust.o
 virtio_rng_lang_core-$(CONFIG_HW_RANDOM_VIRTIO_LANG_MC) += \
-	virtio_rng_lang/vrng_core_mc.o
+	virtio_rng_lang/vrng_core_mc.o \
+	virtio_rng_lang/vrng_driver_mc.o
 obj-$(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW) += \
-	virtio_rng_lang/vrng_shadow.o
+	virtio_rng_lang/vrng_shadow.o \
+	virtio_rng_lang/vrng_driver_shadow.o
 obj-$(CONFIG_HW_RANDOM_VIRTIO_LANG_KUNIT_TEST) += virtio_rng_lang_test.o
 virtio_rng_lang_test-y := virtio_rng_lang/vrng_kunit.o
 
@@ -62,7 +67,12 @@ $(obj)/virtio_rng_lang/vrng_core_mc.o: \
 		$(src)/virtio_rng_lang/vrng_core_mc.mc $(vrng_mcc_deps) FORCE
 	$(call if_changed,vrng_mcc)
 
-targets += virtio_rng_lang/vrng_core_mc.ll
+$(obj)/virtio_rng_lang/vrng_driver_mc.o: \
+		$(src)/virtio_rng_lang/vrng_driver_mc.mc $(vrng_mcc_deps) FORCE
+	$(call if_changed,vrng_mcc)
+
+targets += virtio_rng_lang/vrng_core_mc.ll \
+	virtio_rng_lang/vrng_driver_mc.ll
 obj-$(CONFIG_HW_RANDOM_MXC_RNGA) += mxc-rnga.o
 obj-$(CONFIG_HW_RANDOM_IMX_RNGC) += imx-rngc.o
 obj-$(CONFIG_HW_RANDOM_INGENIC_RNG) += ingenic-rng.o

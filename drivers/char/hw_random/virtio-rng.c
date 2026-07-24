@@ -21,6 +21,7 @@
 
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
 #include "virtio_rng_lang/vrng_shadow.h"
+#include "virtio_rng_lang/vrng_driver_shadow.h"
 #endif
 #include "virtio_rng_internal.h"
 
@@ -125,10 +126,12 @@ struct virtrng_info {
 	__dma_from_device_group_end();
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
 	struct vrng_shadow shadow;
+	struct vrng_driver_shadow driver_shadow;
 	struct work_struct publication_work;
 	unsigned int publication_len;
 	bool shadow_initialized;
 	bool shadow_active;
+	bool driver_shadow_initialized;
 #endif
 };
 
@@ -136,14 +139,23 @@ static int request_entropy_locked(struct virtrng_info *vi);
 static int remove_common(struct virtio_device *vdev);
 
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
+static void publish_fatal_error(struct virtrng_info *vi, int error);
+
 static void publish_held_data(struct work_struct *work)
 {
 	struct virtrng_info *vi =
 		container_of(work, struct virtrng_info, publication_work);
+	int err;
 
 	WRITE_ONCE(vrng_lang_publication_held, 1);
 	while (READ_ONCE(vrng_lang_hold_publication))
 		usleep_range(1000, 2000);
+	err = vrng_driver_shadow_publish(&vi->driver_shadow);
+	if (err) {
+		publish_fatal_error(vi, err);
+		WRITE_ONCE(vrng_lang_publication_held, 0);
+		return;
+	}
 	/* Publish the completed DMA bytes before waking readers. */
 	smp_store_release(&vi->data_avail, READ_ONCE(vi->publication_len));
 	complete(&vi->have_data);
@@ -241,9 +253,19 @@ static void random_recv_done(struct virtqueue *vq)
 		publish_data_error(vi, err);
 		return;
 	}
+	err = vrng_driver_shadow_complete(&vi->driver_shadow, len);
+	if (err) {
+		publish_fatal_error(vi, err);
+		return;
+	}
 	if (READ_ONCE(vrng_lang_hold_publication)) {
 		WRITE_ONCE(vi->publication_len, len);
 		schedule_work(&vi->publication_work);
+		return;
+	}
+	err = vrng_driver_shadow_publish(&vi->driver_shadow);
+	if (err) {
+		publish_fatal_error(vi, err);
 		return;
 	}
 #else
@@ -477,6 +499,10 @@ static int probe_common(struct virtio_device *vdev)
 		goto err_request;
 	vi->shadow_initialized = true;
 	vi->shadow_active = true;
+	err = vrng_driver_shadow_init(&vi->driver_shadow);
+	if (err)
+		goto err_request;
+	vi->driver_shadow_initialized = true;
 	WRITE_ONCE(vrng_lang_completion_held, 0);
 	WRITE_ONCE(vrng_lang_publication_held, 0);
 	WRITE_ONCE(vrng_lang_remove_begun, 0);
@@ -520,13 +546,23 @@ static int remove_common(struct virtio_device *vdev)
 #if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
 	struct vrng_shadow_mismatch last;
 	struct vrng_core_state final_state;
-	u64 events, mismatches;
+	struct vrng_driver_state final_driver_state;
+	u64 events, mismatches, driver_events = 0, driver_mismatches = 0;
 	int err;
 
 	mutex_lock(&vi->process_lock);
 	if (vi->shadow_active) {
 		err = vrng_shadow_begin_remove(&vi->shadow);
 		virtrng_record_first_error(&first_err, err);
+	}
+	if (vi->driver_shadow_initialized) {
+		bool model_unregister = false;
+
+		err = vrng_driver_shadow_begin_remove(&vi->driver_shadow,
+						      &model_unregister);
+		virtrng_record_first_error(&first_err, err);
+		if (!err && model_unregister != vi->hwrng_register_done)
+			virtrng_record_first_error(&first_err, -EPROTO);
 	}
 #else
 	mutex_lock(&vi->process_lock);
@@ -549,6 +585,14 @@ static int remove_common(struct virtio_device *vdev)
 	cancel_work_sync(&vi->publication_work);
 #endif
 	vdev->config->del_vqs(vdev);
+#if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
+	if (vi->driver_shadow_initialized) {
+		err = vrng_driver_shadow_drain(&vi->driver_shadow);
+		virtrng_record_first_error(&first_err, err);
+		err = vrng_driver_shadow_final_clear(&vi->driver_shadow);
+		virtrng_record_first_error(&first_err, err);
+	}
+#endif
 	/* No callback can republish data after the final externally visible clear. */
 	mutex_lock(&vi->process_lock);
 	WRITE_ONCE(vi->data_avail, 0);
@@ -563,6 +607,10 @@ static int remove_common(struct virtio_device *vdev)
 			   final_state.lifecycle);
 		WRITE_ONCE(vrng_lang_last_remove_phase, final_state.phase);
 	}
+	if (vi->driver_shadow_initialized) {
+		err = vrng_driver_shadow_finish_remove(&vi->driver_shadow);
+		virtrng_record_first_error(&first_err, err);
+	}
 	WRITE_ONCE(vrng_lang_last_remove_data_avail,
 		   READ_ONCE(vi->data_avail));
 #endif
@@ -571,21 +619,27 @@ static int remove_common(struct virtio_device *vdev)
 	if (!vi->shadow_initialized)
 		goto free_info;
 	vrng_shadow_snapshot(&vi->shadow, &events, &mismatches, &last);
-	if (mismatches)
+	if (vi->driver_shadow_initialized)
+		vrng_driver_shadow_snapshot(&vi->driver_shadow, &driver_events,
+					    &driver_mismatches,
+					    &final_driver_state);
+	if (mismatches || driver_mismatches)
 		dev_warn(&vdev->dev,
-			 "language shadow control=%s mismatches=%llu events=%llu teardown_error=%d last_event=%u last_sequence=%llu C=%d Rust=%d MC=%d spec=%d\n",
+			 "language shadow control=%s mismatches=%llu events=%llu driver_mismatches=%llu driver_events=%llu teardown_error=%d last_event=%u last_sequence=%llu C=%d Rust=%d MC=%d spec=%d\n",
 			 vrng_shadow_control_name(),
-			 mismatches, events, first_err, last.event, last.sequence,
+			 mismatches, events, driver_mismatches, driver_events,
+			 first_err, last.event, last.sequence,
 			 last.c_result, last.rust_result, last.mc_result,
 			 last.spec_result);
 	else if (first_err)
 		dev_warn(&vdev->dev,
-			 "language shadow control=%s teardown failed=%d after %llu matching protocol events\n",
-			 vrng_shadow_control_name(), first_err, events);
+			 "language shadow control=%s teardown failed=%d after %llu protocol and %llu driver lifecycle events\n",
+			 vrng_shadow_control_name(), first_err, events,
+			 driver_events);
 	else
 		dev_info(&vdev->dev,
-			 "language shadow control=%s matched all %llu protocol events\n",
-			 vrng_shadow_control_name(), events);
+			 "language shadow control=%s matched all %llu protocol and %llu driver lifecycle events\n",
+			 vrng_shadow_control_name(), events, driver_events);
 free_info:
 #endif
 	ida_free(&rng_index_ida, vi->index);
@@ -619,6 +673,23 @@ static void virtrng_scan(struct virtio_device *vdev)
 	int err;
 
 	err = virtrng_hwrng_register(vi);
+#if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
+	{
+		int lifecycle_err;
+
+		lifecycle_err =
+			vrng_driver_shadow_register(&vi->driver_shadow, !err);
+		if (lifecycle_err) {
+			if (!err)
+				hwrng_unregister(&vi->hwrng);
+			publish_fatal_error(vi, lifecycle_err);
+			dev_err(&vdev->dev,
+				"language driver lifecycle rejected registration: %d\n",
+				lifecycle_err);
+			return;
+		}
+	}
+#endif
 	if (!err) {
 		mutex_lock(&vi->process_lock);
 		vi->hwrng_register_done = true;
@@ -632,7 +703,10 @@ static void virtrng_scan(struct virtio_device *vdev)
 
 static int virtrng_freeze(struct virtio_device *vdev)
 {
-	/* Always finish physical cleanup, but propagate logical verification failure. */
+	/*
+	 * Always finish physical cleanup, but propagate logical verification
+	 * failure.
+	 */
 	return remove_common(vdev);
 }
 
@@ -653,6 +727,20 @@ static int virtrng_restore(struct virtio_device *vdev)
 		vi->hwrng_removed = true;
 		mutex_unlock(&vi->process_lock);
 		err = virtrng_hwrng_register(vi);
+#if IS_ENABLED(CONFIG_HW_RANDOM_VIRTIO_LANG_SHADOW)
+		if (vi->driver_shadow_initialized) {
+			int lifecycle_err;
+
+			lifecycle_err =
+				vrng_driver_shadow_register(&vi->driver_shadow,
+							    !err);
+			if (lifecycle_err) {
+				if (!err)
+					hwrng_unregister(&vi->hwrng);
+				err = lifecycle_err;
+			}
+		}
+#endif
 		if (!err) {
 			mutex_lock(&vi->process_lock);
 			vi->hwrng_register_done = true;
